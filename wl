@@ -9,10 +9,10 @@
       "tier": "lifetime"
     },
     {
-      "owner": null,
-      "gameId": 9876543210,
-      "groupId": 12345678,
-      "expiry": "2025-12-31",
+      "owner": 1954323536,
+      "gameId": null,
+      "groupId": null,
+      "expiry": "2026-1-5",
       "tier": "premium"
     }
   ]
