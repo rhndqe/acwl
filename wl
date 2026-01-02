@@ -1,5 +1,4 @@
 {
-  "version": "1.0.0",
   "licenses": [
     {
       "owner": 1954323536,
@@ -9,7 +8,7 @@
       "tier": "lifetime"
     },
     {
-      "owner": 1954323536,
+      "owner": 0,
       "gameId": null,
       "groupId": null,
       "expiry": "2026-1-5",
