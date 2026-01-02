@@ -1,6 +1,17 @@
 {
   "version": "1.0.0",
-  "users": [123456789, 987654321],
-  "games": [1234567890, 9876543210],
-  "groups": [12345678]
+  "licenses": [
+    {
+      "owner": 123456789,
+      "gameId": 1234567890,
+      "expiry": null,
+      "tier": "lifetime"
+    },
+    {
+      "owner": 987654321,
+      "gameId": 9876543210,
+      "expiry": "2025-12-31",
+      "tier": "premium"
+    }
+  ]
 }
