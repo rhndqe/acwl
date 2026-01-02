@@ -1,0 +1,550 @@
+--[[
+    reiAnC System Modules
+    
+    Upload this to: https://github.com/rhndqe/acwl/main/sys
+    
+    Contains all system functionality:
+    - Role System
+    - Anti-Cheat Detection
+    - GUI System
+    - Command System
+]]
+
+return function()
+
+local SystemModules = {}
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+-- ============================================
+-- ROLE SYSTEM
+-- ============================================
+local RoleSystem = {}
+RoleSystem.__index = RoleSystem
+
+function RoleSystem.new(config)
+    local self = setmetatable({}, RoleSystem)
+    self.Config = config
+    self.PlayerRanks = {}
+    return self
+end
+
+function RoleSystem:GetRank(player)
+    -- Check cached rank
+    if self.PlayerRanks[player.UserId] then
+        return self.PlayerRanks[player.UserId]
+    end
+    
+    local highestRank = 0
+    local rankName = "Player"
+    
+    -- Check Ranks table (specific users)
+    for _, rankData in ipairs(self.Config.Ranks) do
+        local rank = rankData[1]
+        local name = rankData[2]
+        local users = rankData[3]
+        
+        if users then
+            for _, user in ipairs(users) do
+                if type(user) == "string" and player.Name == user then
+                    if rank > highestRank then
+                        highestRank = rank
+                        rankName = name
+                    end
+                elseif type(user) == "number" and player.UserId == user then
+                    if rank > highestRank then
+                        highestRank = rank
+                        rankName = name
+                    end
+                end
+            end
+        end
+    end
+    
+    -- Check Groups
+    if self.Config.Groups then
+        for groupId, ranks in pairs(self.Config.Groups) do
+            if groupId ~= 0 then
+                local success, groupRank = pcall(function()
+                    return player:GetRankInGroup(groupId)
+                end)
+                
+                if success and ranks[groupRank] then
+                    local rank = self:GetRankValue(ranks[groupRank])
+                    if rank > highestRank then
+                        highestRank = rank
+                        rankName = ranks[groupRank]
+                    end
+                end
+            end
+        end
+    end
+    
+    -- Check Friends
+    if self.Config.Friends and self.Config.Friends ~= "Player" then
+        local isOwnerFriend = false
+        pcall(function()
+            isOwnerFriend = player:IsFriendsWith(game.CreatorId)
+        end)
+        
+        if isOwnerFriend then
+            local rank = self:GetRankValue(self.Config.Friends)
+            if rank > highestRank then
+                highestRank = rank
+                rankName = self.Config.Friends
+            end
+        end
+    end
+    
+    -- Check Free Access
+    if self.Config.FreeAccess and self.Config.FreeAccess ~= "Player" then
+        local rank = self:GetRankValue(self.Config.FreeAccess)
+        if rank > highestRank then
+            highestRank = rank
+            rankName = self.Config.FreeAccess
+        end
+    end
+    
+    -- Cache rank
+    self.PlayerRanks[player.UserId] = {Rank = highestRank, Name = rankName}
+    
+    return highestRank, rankName
+end
+
+function RoleSystem:GetRankValue(rankName)
+    for _, rankData in ipairs(self.Config.Ranks) do
+        if rankData[2] == rankName then
+            return rankData[1]
+        end
+    end
+    return 0
+end
+
+function RoleSystem:CanBypass(player, detectionType)
+    local rank = self:GetRank(player)
+    
+    -- Check if rank bypasses all detections
+    if self.Config.BypassRanks and self.Config.BypassRanks.AllDetections then
+        if rank >= self.Config.BypassRanks.AllDetections then
+            return true
+        end
+    end
+    
+    -- Check specific detection bypass
+    if self.Config.BypassRanks and self.Config.BypassRanks[detectionType] then
+        if rank >= self.Config.BypassRanks[detectionType] then
+            return true
+        end
+    end
+    
+    return false
+end
+
+-- ============================================
+-- ANTI-CHEAT SYSTEM
+-- ============================================
+local AntiCheat = {}
+AntiCheat.__index = AntiCheat
+
+function AntiCheat.new(config, roleSystem)
+    local self = setmetatable({}, AntiCheat)
+    self.Config = config
+    self.RoleSystem = roleSystem
+    self.PlayerData = {}
+    self.Violations = {}
+    self.Active = config.EnableAntiCheat or true
+    return self
+end
+
+function AntiCheat:InitPlayer(player)
+    self.PlayerData[player.UserId] = {
+        LastPosition = nil,
+        AirTime = 0,
+        Violations = 0,
+        JoinTime = tick()
+    }
+    self.Violations[player.UserId] = {}
+    
+    local rank, rankName = self.RoleSystem:GetRank(player)
+    if rank > 0 then
+        print(string.format("[reiAnC] %s joined with rank: %s (%d)", player.Name, rankName, rank))
+    end
+end
+
+function AntiCheat:RemovePlayer(player)
+    self.PlayerData[player.UserId] = nil
+    self.Violations[player.UserId] = nil
+end
+
+function AntiCheat:CheckSpeed(player, character)
+    if not self.Config.Speed or not self.Config.Speed.Enabled then return false end
+    if self.RoleSystem:CanBypass(player, "Speed") then return false end
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    if not humanoid then return false end
+    
+    local speed = humanoid.WalkSpeed
+    local max = self.Config.Speed.Max
+    
+    if speed > max then
+        self:LogViolation(player, "Speed", {detected = math.floor(speed), max = max})
+        
+        if self.Config.Speed.AutoReset then
+            humanoid.WalkSpeed = max
+        end
+        return true
+    end
+    return false
+end
+
+function AntiCheat:CheckFly(player, character)
+    if not self.Config.Fly or not self.Config.Fly.Enabled then return false end
+    if self.RoleSystem:CanBypass(player, "Fly") then return false end
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not humanoid or not rootPart then return false end
+    
+    local data = self.PlayerData[player.UserId]
+    if not data then return false end
+    
+    local state = humanoid:GetState()
+    if humanoid.FloorMaterial == Enum.Material.Air and state ~= Enum.HumanoidStateType.Swimming then
+        data.AirTime = data.AirTime + 0.1
+    else
+        data.AirTime = 0
+    end
+    
+    if data.AirTime > self.Config.Fly.MaxAirTime then
+        self:LogViolation(player, "Fly", {airTime = math.floor(data.AirTime * 10) / 10})
+        
+        if self.Config.Fly.AutoBring then
+            local ray = Ray.new(rootPart.Position, Vector3.new(0, -1000, 0))
+            local hit, position = workspace:FindPartOnRay(ray, character)
+            if hit then
+                rootPart.CFrame = CFrame.new(position + Vector3.new(0, 5, 0))
+            end
+        end
+        
+        data.AirTime = 0
+        return true
+    end
+    return false
+end
+
+function AntiCheat:CheckTeleport(player, character)
+    if not self.Config.Teleport or not self.Config.Teleport.Enabled then return false end
+    if self.RoleSystem:CanBypass(player, "Teleport") then return false end
+    
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return false end
+    
+    local data = self.PlayerData[player.UserId]
+    if not data then return false end
+    
+    -- Ignore if just spawned
+    if self.Config.Teleport.IgnoreSpawn and tick() - data.JoinTime < 5 then
+        data.LastPosition = rootPart.Position
+        return false
+    end
+    
+    if data.LastPosition then
+        local distance = (rootPart.Position - data.LastPosition).Magnitude
+        
+        if distance > self.Config.Teleport.MaxDistance then
+            self:LogViolation(player, "Teleport", {distance = math.floor(distance)})
+            
+            if self.Config.Teleport.AutoReturn then
+                rootPart.CFrame = CFrame.new(data.LastPosition)
+            end
+            return true
+        end
+    end
+    
+    data.LastPosition = rootPart.Position
+    return false
+end
+
+function AntiCheat:CheckJump(player, character)
+    if not self.Config.Jump or not self.Config.Jump.Enabled then return false end
+    if self.RoleSystem:CanBypass(player, "Jump") then return false end
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    if not humanoid then return false end
+    
+    local power = humanoid.JumpPower
+    local height = humanoid.JumpHeight
+    
+    if power > self.Config.Jump.MaxPower or height > self.Config.Jump.MaxHeight then
+        self:LogViolation(player, "Jump", {power = math.floor(power), height = math.floor(height)})
+        
+        if self.Config.Jump.AutoReset then
+            humanoid.JumpPower = self.Config.Jump.MaxPower
+            humanoid.JumpHeight = self.Config.Jump.MaxHeight
+        end
+        return true
+    end
+    return false
+end
+
+function AntiCheat:CheckNoClip(player, character)
+    if not self.Config.NoClip or not self.Config.NoClip.Enabled then return false end
+    if self.RoleSystem:CanBypass(player, "NoClip") then return false end
+    
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return false end
+    
+    if rootPart.CanCollide == false then
+        local humanoid = character:FindFirstChild("Humanoid")
+        if humanoid and humanoid:GetState() ~= Enum.HumanoidStateType.Dead then
+            self:LogViolation(player, "NoClip", {})
+            
+            if self.Config.NoClip.AutoFix then
+                rootPart.CanCollide = true
+            end
+            return true
+        end
+    end
+    return false
+end
+
+function AntiCheat:LogViolation(player, violationType, data)
+    local userId = player.UserId
+    
+    if not self.Violations[userId] then
+        self.Violations[userId] = {}
+    end
+    
+    table.insert(self.Violations[userId], {
+        type = violationType,
+        data = data,
+        time = tick()
+    })
+    
+    local count = #self.Violations[userId]
+    
+    -- Log to console
+    if self.Config.Punishment and self.Config.Punishment.LogViolations then
+        local dataStr = ""
+        for k, v in pairs(data) do
+            dataStr = dataStr .. k .. "=" .. tostring(v) .. " "
+        end
+        warn(string.format("[reiAnC] %s (%d) - %s | %s| Violations: %d", 
+            player.Name, userId, violationType, dataStr, count))
+    end
+    
+    -- Punishment
+    if self.Config.Punishment then
+        if self.Config.Punishment.AutoKick then
+            player:Kick("[reiAnC] Anti-Cheat Detection: " .. violationType)
+        elseif self.Config.Punishment.AutoBan and count >= self.Config.Punishment.MaxViolations then
+            player:Kick("[reiAnC] Multiple violations - Banned")
+        end
+    end
+end
+
+function AntiCheat:StartMonitoring()
+    local interval = self.Config.CheckInterval or 0.1
+    local lastCheck = tick()
+    
+    RunService.Heartbeat:Connect(function()
+        if not self.Active then return end
+        
+        local now = tick()
+        if now - lastCheck < interval then return end
+        lastCheck = now
+        
+        for _, player in ipairs(Players:GetPlayers()) do
+            local character = player.Character
+            if character and character:FindFirstChild("HumanoidRootPart") and character:FindFirstChild("Humanoid") then
+                self:CheckSpeed(player, character)
+                self:CheckFly(player, character)
+                self:CheckTeleport(player, character)
+                self:CheckJump(player, character)
+                self:CheckNoClip(player, character)
+            end
+        end
+    end)
+    
+    -- Property change monitoring
+    Players.PlayerAdded:Connect(function(player)
+        player.CharacterAdded:Connect(function(character)
+            local humanoid = character:WaitForChild("Humanoid", 5)
+            if humanoid then
+                humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+                    self:CheckSpeed(player, character)
+                end)
+                
+                humanoid:GetPropertyChangedSignal("JumpPower"):Connect(function()
+                    self:CheckJump(player, character)
+                end)
+                
+                humanoid:GetPropertyChangedSignal("JumpHeight"):Connect(function()
+                    self:CheckJump(player, character)
+                end)
+            end
+        end)
+    end)
+end
+
+-- ============================================
+-- GUI SYSTEM
+-- ============================================
+local GUISystem = {}
+
+function GUISystem.Create(player, config, antiCheat, roleSystem)
+    local playerGui = player:WaitForChild("PlayerGui")
+    
+    if playerGui:FindFirstChild("reiAnC_GUI") then
+        playerGui.reiAnC_GUI:Destroy()
+    end
+    
+    local rank = roleSystem:GetRank(player)
+    if not config.AutoShowGUIForRank or rank < config.AutoShowGUIForRank then
+        return
+    end
+    
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "reiAnC_GUI"
+    screenGui.ResetOnSpawn = false
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    
+    -- Settings Button
+    local btn = Instance.new("ImageButton")
+    btn.Name = "SettingsButton"
+    btn.Parent = screenGui
+    btn.AnchorPoint = Vector2.new(0.5, 0)
+    btn.Position = UDim2.new(0.5, 0, 0, 10)
+    btn.Size = UDim2.new(0, 50, 0, 50)
+    btn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    btn.BorderSizePixel = 0
+    btn.Image = "rbxassetid://3926305904"
+    btn.ImageColor3 = Color3.fromRGB(255, 255, 255)
+    
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(1, 0)
+    btnCorner.Parent = btn
+    
+    local btnGradient = Instance.new("UIGradient")
+    btnGradient.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(55, 55, 55)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(35, 35, 35))
+    }
+    btnGradient.Rotation = 90
+    btnGradient.Parent = btn
+    
+    -- Settings Panel (simplified for now)
+    local panel = Instance.new("Frame")
+    panel.Name = "SettingsPanel"
+    panel.Parent = screenGui
+    panel.AnchorPoint = Vector2.new(0.5, 0.5)
+    panel.Position = UDim2.new(0.5, 0, 0.5, 0)
+    panel.Size = UDim2.new(0, 500, 0, 400)
+    panel.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    panel.BorderSizePixel = 0
+    panel.Visible = false
+    
+    local panelCorner = Instance.new("UICorner")
+    panelCorner.CornerRadius = UDim.new(0, 12)
+    panelCorner.Parent = panel
+    
+    local title = Instance.new("TextLabel")
+    title.Parent = panel
+    title.Size = UDim2.new(1, 0, 0, 50)
+    title.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    title.BorderSizePixel = 0
+    title.Font = Enum.Font.GothamBold
+    title.Text = "reiAnC Settings"
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.TextSize = 20
+    
+    local titleCorner = Instance.new("UICorner")
+    titleCorner.CornerRadius = UDim.new(0, 12)
+    titleCorner.Parent = title
+    
+    btn.MouseButton1Click:Connect(function()
+        panel.Visible = not panel.Visible
+    end)
+    
+    screenGui.Parent = playerGui
+    print("[reiAnC] GUI created for " .. player.Name)
+end
+
+-- ============================================
+-- COMMAND SYSTEM
+-- ============================================
+local function setupCommands(config, antiCheat, roleSystem)
+    if not config.EnableChatCommands then return end
+    
+    local command = config.ShowGUICommand or "/ac"
+    
+    Players.PlayerAdded:Connect(function(player)
+        player.Chatted:Connect(function(message)
+            if message:lower() == command:lower() then
+                local playerGui = player:WaitForChild("PlayerGui")
+                local gui = playerGui:FindFirstChild("reiAnC_GUI")
+                
+                if gui then
+                    local btn = gui:FindFirstChild("SettingsButton")
+                    if btn then
+                        btn.Visible = not btn.Visible
+                    end
+                else
+                    GUISystem.Create(player, config, antiCheat, roleSystem)
+                end
+            end
+        end)
+    end)
+end
+
+-- ============================================
+-- MAIN INIT
+-- ============================================
+function SystemModules:Init(config, tier)
+    print("[reiAnC] Initializing system modules...")
+    
+    -- Initialize Role System
+    local roleSystem = RoleSystem.new(config)
+    
+    -- Initialize Anti-Cheat
+    local antiCheat = AntiCheat.new(config, roleSystem)
+    
+    -- Setup Commands
+    setupCommands(config, antiCheat, roleSystem)
+    
+    -- Player Events
+    Players.PlayerAdded:Connect(function(player)
+        antiCheat:InitPlayer(player)
+        
+        player.CharacterAdded:Connect(function()
+            wait(1)
+            antiCheat:InitPlayer(player)
+            
+            -- Show GUI
+            if config.AutoShowGUIForRank then
+                GUISystem.Create(player, config, antiCheat, roleSystem)
+            end
+        end)
+    end)
+    
+    Players.PlayerRemoving:Connect(function(player)
+        antiCheat:RemovePlayer(player)
+    end)
+    
+    -- Start Monitoring
+    antiCheat:StartMonitoring()
+    
+    print("[reiAnC] ✓ All systems operational")
+    
+    return {
+        AntiCheat = antiCheat,
+        RoleSystem = roleSystem,
+        Config = config,
+        Tier = tier,
+        Version = "1.0.0"
+    }
+end
+
+return SystemModules
+
+end
