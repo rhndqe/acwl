@@ -2,7 +2,7 @@
   "version": "1.0.0",
   "licenses": [
     {
-      "owner": 123456789,
+      "owner": 1954323536,
       "gameId": 1234567890,
       "groupId": null,
       "expiry": null,
