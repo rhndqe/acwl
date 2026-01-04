@@ -396,6 +396,24 @@ function PermissionSystem:CanAccess(userId)
 end
 
 -- ============================================
+-- REMOTE EVENT SYSTEM (FIX untuk client)
+-- ============================================
+local function SetupRemoteEvent()
+    -- Buat RemoteEvent di ReplicatedStorage agar bisa diakses oleh client
+    local remoteName = "reiAnC_Command"
+    local remoteEvent = ReplicatedStorage:FindFirstChild(remoteName)
+    
+    if not remoteEvent then
+        remoteEvent = Instance.new("RemoteEvent")
+        remoteEvent.Name = remoteName
+        remoteEvent.Parent = ReplicatedStorage
+        print("[reiAnC] RemoteEvent created in ReplicatedStorage")
+    end
+    
+    return remoteEvent
+end
+
+-- ============================================
 -- COMMAND SYSTEM
 -- ============================================
 local function SetupCommandSystem(player, antiCheat, permissions, userData, config)
@@ -414,7 +432,7 @@ local function SetupCommandSystem(player, antiCheat, permissions, userData, conf
         end
     end
     
-    -- Function untuk memproses command
+    -- Function untuk memproses command dari chat
     local function ProcessCommand(message)
         if not config.Command or not config.Command.Enabled then
             return false
@@ -462,13 +480,39 @@ local function SetupCommandSystem(player, antiCheat, permissions, userData, conf
         end)
     end
     
+    -- Setup RemoteEvent handler
+    local remoteEvent = ReplicatedStorage:WaitForChild("reiAnC_Command")
+    if remoteEvent then
+        remoteEvent.OnServerEvent:Connect(function(plr, command)
+            if plr ~= player then return end
+            
+            local userRole = permissions:GetUserRole(player.UserId)
+            if not userRole then return end
+            
+            local allowedRoles = config.Command.AccessLevels and config.Command.AccessLevels.ToggleGUI or 
+                               {"Owner", "Developer", "Admin", "Moderator"}
+            
+            local hasAccess = false
+            for _, role in ipairs(allowedRoles) do
+                if userRole == role then
+                    hasAccess = true
+                    break
+                end
+            end
+            
+            if hasAccess and command == "ToggleGUI" then
+                ToggleGUI()
+            end
+        end)
+    end
+    
     return {
         Toggle = ToggleGUI
     }
 end
 
 -- ============================================
--- MODERN GUI SYSTEM
+-- MODERN GUI SYSTEM (Sama seperti sebelumnya)
 -- ============================================
 local function CreateGUI(player, antiCheat, permissions, userData)
     local playerGui = player:WaitForChild("PlayerGui")
@@ -951,7 +995,7 @@ local function CreateGUI(player, antiCheat, permissions, userData)
     task.wait()
     updatesContent.CanvasSize = UDim2.new(0, 0, 0, updatesContent.UIListLayout.AbsoluteContentSize.Y + 30)
     
-    -- Populate Permissions Tab
+    -- Populate Permissions Tab (sama seperti sebelumnya)
     local permissionsContent = contentFrames.Permissions
     
     local roles = {"Owner", "Developer", "Admin", "Moderator"}
@@ -1305,6 +1349,10 @@ end
 -- ============================================
 function SystemModule:Init(config, userData)
     print("[reiAnC] Initializing system modules...")
+    
+    -- Setup RemoteEvent di ReplicatedStorage
+    SetupRemoteEvent()
+    print("[reiAnC] ✓ RemoteEvent system setup")
     
     -- Initialize Permission System
     local permissions = PermissionSystem.new(config)
