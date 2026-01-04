@@ -1,662 +1,1323 @@
 --[[
-    reiAnC System Modules
-    
-    Upload this to: https://github.com/rhndqe/acwl/main/sys
-    
-    Contains all system functionality:
-    - Role System
-    - Anti-Cheat Detection
-    - GUI System
-    - Command System
+    reiAnC System Module
+    Upload to: https://raw.githubusercontent.com/rhndqe/acwl/refs/heads/main/sys
 ]]
 
-local SystemModules = {}
+local SystemModule = {}
 
 -- Services
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+local TweenService = game:GetService("TweenService")
+
+-- Sound IDs
+local SOUND_CLICK = "rbxassetid://6895079853"
+local SOUND_HOVER = "rbxassetid://6895079853"
+local SOUND_TOGGLE = "rbxassetid://6895079853"
 
 -- ============================================
--- ROLE SYSTEM
--- ============================================
-local RoleSystem = {}
-RoleSystem.__index = RoleSystem
-
-function RoleSystem.new(config)
-	local self = setmetatable({}, RoleSystem)
-	self.Config = config
-	self.PlayerRanks = {}
-	return self
-end
-
-function RoleSystem:GetRank(player)
-	-- Check cached rank
-	if self.PlayerRanks[player.UserId] then
-		return self.PlayerRanks[player.UserId].Rank, self.PlayerRanks[player.UserId].Name
-	end
-
-	local highestRank = 0
-	local rankName = "Player"
-
-	-- Check Ranks table (specific users)
-	for _, rankData in ipairs(self.Config.Ranks) do
-		local rank = rankData[1]
-		local name = rankData[2]
-		local users = rankData[3]
-
-		if users then
-			for _, user in ipairs(users) do
-				if type(user) == "string" and user ~= "" and player.Name == user then
-					if rank > highestRank then
-						highestRank = rank
-						rankName = name
-					end
-				elseif type(user) == "number" and user ~= 0 and player.UserId == user then
-					if rank > highestRank then
-						highestRank = rank
-						rankName = name
-					end
-				end
-			end
-		end
-	end
-
-	-- Check Groups
-	if self.Config.Groups then
-		for groupId, ranks in pairs(self.Config.Groups) do
-			if groupId ~= 0 and type(groupId) == "number" then
-				local success, groupRank = pcall(function()
-					return player:GetRankInGroup(groupId)
-				end)
-
-				if success and groupRank and ranks[groupRank] then
-					local rank = self:GetRankValue(ranks[groupRank])
-					if rank > highestRank then
-						highestRank = rank
-						rankName = ranks[groupRank]
-					end
-				end
-			end
-		end
-	end
-
-	-- Check Friends
-	if self.Config.Friends and self.Config.Friends ~= "Player" and self.Config.Friends ~= "" then
-		local success, isOwnerFriend = pcall(function()
-			return player:IsFriendsWith(game.CreatorId)
-		end)
-
-		if success and isOwnerFriend then
-			local rank = self:GetRankValue(self.Config.Friends)
-			if rank and rank > highestRank then
-				highestRank = rank
-				rankName = self.Config.Friends
-			end
-		end
-	end
-
-	-- Check Free Access
-	if self.Config.FreeAccess and self.Config.FreeAccess ~= "Player" and self.Config.FreeAccess ~= "" then
-		local rank = self:GetRankValue(self.Config.FreeAccess)
-		if rank and rank > highestRank then
-			highestRank = rank
-			rankName = self.Config.FreeAccess
-		end
-	end
-
-	-- Cache rank
-	self.PlayerRanks[player.UserId] = {Rank = highestRank, Name = rankName}
-
-	return highestRank, rankName
-end
-
-function RoleSystem:GetRankValue(rankName)
-	if not rankName or rankName == "" then return 0 end
-
-	for _, rankData in ipairs(self.Config.Ranks) do
-		if rankData[2] == rankName then
-			return rankData[1]
-		end
-	end
-	return 0
-end
-
-function RoleSystem:CanBypass(player, detectionType)
-	local rank = self:GetRank(player)
-
-	-- Check if rank bypasses all detections
-	if self.Config.BypassRanks and self.Config.BypassRanks.AllDetections then
-		if rank >= self.Config.BypassRanks.AllDetections then
-			return true
-		end
-	end
-
-	-- Check specific detection bypass
-	if self.Config.BypassRanks and self.Config.BypassRanks[detectionType] then
-		if rank >= self.Config.BypassRanks[detectionType] then
-			return true
-		end
-	end
-
-	return false
-end
-
--- ============================================
--- ANTI-CHEAT SYSTEM
+-- ADVANCED ANTI-CHEAT ENGINE
 -- ============================================
 local AntiCheat = {}
 AntiCheat.__index = AntiCheat
 
-function AntiCheat.new(config, roleSystem)
-	local self = setmetatable({}, AntiCheat)
-	self.Config = config
-	self.RoleSystem = roleSystem
-	self.PlayerData = {}
-	self.Violations = {}
-	self.Active = true
-
-	if config.EnableAntiCheat ~= nil then
-		self.Active = config.EnableAntiCheat
-	end
-
-	return self
+function AntiCheat.new(config, userData)
+    local self = setmetatable({}, AntiCheat)
+    self.Config = config
+    self.UserData = userData
+    self.PlayerData = {}
+    self.Violations = {}
+    self.BannedUsers = {}
+    self.Statistics = {
+        TotalDetections = 0,
+        PlayersKicked = 0,
+        PlayersBanned = 0,
+        DetectionsByType = {},
+        StartTime = tick()
+    }
+    self.Settings = {
+        Speed = true,
+        Fly = true,
+        Teleport = true,
+        Jump = true,
+        NoClip = true,
+        InfiniteJump = true,
+        GodMode = true,
+        RemoteSpy = true,
+        ExecutorDetection = true,
+        AntiExploit = true
+    }
+    return self
 end
 
 function AntiCheat:InitPlayer(player)
-	self.PlayerData[player.UserId] = {
-		LastPosition = nil,
-		AirTime = 0,
-		Violations = 0,
-		JoinTime = tick()
-	}
-	self.Violations[player.UserId] = {}
-
-	local rank, rankName = self.RoleSystem:GetRank(player)
-	if rank > 0 then
-		print(string.format("[reiAnC] %s joined with rank: %s (%d)", player.Name, rankName, rank))
-	end
+    self.PlayerData[player.UserId] = {
+        JoinTime = tick(),
+        LastPosition = nil,
+        AirTime = 0,
+        ConsecutiveJumps = 0,
+        LastJumpTime = 0,
+        ViolationCount = 0,
+        RemoteCalls = {},
+        LastRemoteTime = {},
+        SuspiciousActivity = 0
+    }
+    self.Violations[player.UserId] = {}
 end
 
 function AntiCheat:RemovePlayer(player)
-	self.PlayerData[player.UserId] = nil
-	self.Violations[player.UserId] = nil
+    self.PlayerData[player.UserId] = nil
+    self.Violations[player.UserId] = nil
 end
 
+-- EXECUTOR DETECTION
+function AntiCheat:DetectExecutor(player)
+    if not self.Settings.ExecutorDetection then return end
+    
+    local character = player.Character
+    if not character then return end
+    
+    -- Check for common executor functions in player's environment
+    local suspiciousNames = {
+        "getgenv", "getrenv", "getrawmetatable", "hookmetamethod",
+        "hookfunction", "newcclosure", "setreadonly", "islclosure",
+        "getcallingscript", "getnamecallmethod", "checkcaller"
+    }
+    
+    -- This would be detected client-side, server can only monitor behavior
+    -- Instead, we monitor suspicious remote call patterns
+end
+
+-- REMOTE SPY DETECTION
+function AntiCheat:MonitorRemoteCalls(player, remote, ...)
+    if not self.Settings.RemoteSpy then return false end
+    
+    local data = self.PlayerData[player.UserId]
+    if not data then return false end
+    
+    local remoteName = remote.Name
+    local currentTime = tick()
+    
+    -- Initialize tracking
+    if not data.RemoteCalls[remoteName] then
+        data.RemoteCalls[remoteName] = {
+            count = 0,
+            lastReset = currentTime
+        }
+    end
+    
+    local remoteData = data.RemoteCalls[remoteName]
+    
+    -- Reset counter every second
+    if currentTime - remoteData.lastReset >= 1 then
+        remoteData.count = 0
+        remoteData.lastReset = currentTime
+    end
+    
+    remoteData.count = remoteData.count + 1
+    
+    -- Check for spam (more than 50 calls per second)
+    if remoteData.count > 50 then
+        self:LogViolation(player, "RemoteSpam", {
+            remote = remoteName,
+            calls = remoteData.count
+        })
+        return true
+    end
+    
+    -- Check for scanning patterns (rapid sequential calls to different remotes)
+    data.LastRemoteTime[remoteName] = currentTime
+    
+    local recentRemotes = 0
+    for name, time in pairs(data.LastRemoteTime) do
+        if currentTime - time < 0.5 then
+            recentRemotes = recentRemotes + 1
+        end
+    end
+    
+    if recentRemotes > 10 then
+        data.SuspiciousActivity = data.SuspiciousActivity + 1
+        if data.SuspiciousActivity > 3 then
+            self:LogViolation(player, "RemoteScanning", {
+                remotes = recentRemotes,
+                activity = data.SuspiciousActivity
+            })
+            return true
+        end
+    end
+    
+    return false
+end
+
+-- SPEED DETECTION
 function AntiCheat:CheckSpeed(player, character)
-	if not self.Config.Speed or not self.Config.Speed.Enabled then return false end
-	if self.RoleSystem:CanBypass(player, "Speed") then return false end
-
-	local humanoid = character:FindFirstChild("Humanoid")
-	if not humanoid then return false end
-
-	local speed = humanoid.WalkSpeed
-	local max = self.Config.Speed.Max or 25
-
-	if speed > max then
-		self:LogViolation(player, "Speed", {detected = math.floor(speed), max = max})
-
-		if self.Config.Speed.AutoReset then
-			humanoid.WalkSpeed = max
-		end
-		return true
-	end
-	return false
+    if not self.Settings.Speed then return false end
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    if not humanoid then return false end
+    
+    local speed = humanoid.WalkSpeed
+    local maxSpeed = self.Config.Speed and self.Config.Speed.Max or 25
+    
+    if speed > maxSpeed + 5 then
+        self:LogViolation(player, "Speed", {detected = math.floor(speed), max = maxSpeed})
+        humanoid.WalkSpeed = maxSpeed
+        return true
+    end
+    return false
 end
 
+-- FLY DETECTION
 function AntiCheat:CheckFly(player, character)
-	if not self.Config.Fly or not self.Config.Fly.Enabled then return false end
-	if self.RoleSystem:CanBypass(player, "Fly") then return false end
-
-	local humanoid = character:FindFirstChild("Humanoid")
-	local rootPart = character:FindFirstChild("HumanoidRootPart")
-	if not humanoid or not rootPart then return false end
-
-	local data = self.PlayerData[player.UserId]
-	if not data then return false end
-
-	local state = humanoid:GetState()
-	if humanoid.FloorMaterial == Enum.Material.Air and state ~= Enum.HumanoidStateType.Swimming then
-		data.AirTime = data.AirTime + 0.1
-	else
-		data.AirTime = 0
-	end
-
-	local maxAirTime = self.Config.Fly.MaxAirTime or 3
-
-	if data.AirTime > maxAirTime then
-		self:LogViolation(player, "Fly", {airTime = math.floor(data.AirTime * 10) / 10})
-
-		if self.Config.Fly.AutoBring then
-			local params = RaycastParams.new()
-			params.FilterDescendantsInstances = {character}
-			params.FilterType = Enum.RaycastFilterType.Exclude
-
-			local result = workspace:Raycast(rootPart.Position, Vector3.new(0, -1000, 0), params)
-			if result then
-				rootPart.CFrame = CFrame.new(result.Position + Vector3.new(0, 5, 0))
-			end
-		end
-
-		data.AirTime = 0
-		return true
-	end
-	return false
+    if not self.Settings.Fly then return false end
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not humanoid or not rootPart then return false end
+    
+    local data = self.PlayerData[player.UserId]
+    if not data then return false end
+    
+    if humanoid.FloorMaterial == Enum.Material.Air and humanoid:GetState() ~= Enum.HumanoidStateType.Swimming then
+        data.AirTime = data.AirTime + 0.1
+    else
+        data.AirTime = 0
+    end
+    
+    if data.AirTime > 4 then
+        self:LogViolation(player, "Fly", {airTime = math.floor(data.AirTime * 10) / 10})
+        
+        -- Bring player down
+        local params = RaycastParams.new()
+        params.FilterDescendantsInstances = {character}
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        local result = workspace:Raycast(rootPart.Position, Vector3.new(0, -1000, 0), params)
+        if result then
+            rootPart.CFrame = CFrame.new(result.Position + Vector3.new(0, 5, 0))
+        end
+        
+        data.AirTime = 0
+        return true
+    end
+    return false
 end
 
+-- TELEPORT DETECTION
 function AntiCheat:CheckTeleport(player, character)
-	if not self.Config.Teleport or not self.Config.Teleport.Enabled then return false end
-	if self.RoleSystem:CanBypass(player, "Teleport") then return false end
-
-	local rootPart = character:FindFirstChild("HumanoidRootPart")
-	if not rootPart then return false end
-
-	local data = self.PlayerData[player.UserId]
-	if not data then return false end
-
-	-- Ignore if just spawned
-	local ignoreSpawn = true
-	if self.Config.Teleport.IgnoreSpawn ~= nil then
-		ignoreSpawn = self.Config.Teleport.IgnoreSpawn
-	end
-
-	if ignoreSpawn and tick() - data.JoinTime < 5 then
-		data.LastPosition = rootPart.Position
-		return false
-	end
-
-	if data.LastPosition then
-		local distance = (rootPart.Position - data.LastPosition).Magnitude
-		local maxDistance = self.Config.Teleport.MaxDistance or 50
-
-		if distance > maxDistance then
-			self:LogViolation(player, "Teleport", {distance = math.floor(distance)})
-
-			if self.Config.Teleport.AutoReturn then
-				rootPart.CFrame = CFrame.new(data.LastPosition)
-			end
-			return true
-		end
-	end
-
-	data.LastPosition = rootPart.Position
-	return false
+    if not self.Settings.Teleport then return false end
+    
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return false end
+    
+    local data = self.PlayerData[player.UserId]
+    if not data then return false end
+    
+    if tick() - data.JoinTime < 5 then
+        data.LastPosition = rootPart.Position
+        return false
+    end
+    
+    if data.LastPosition then
+        local distance = (rootPart.Position - data.LastPosition).Magnitude
+        if distance > 70 then
+            self:LogViolation(player, "Teleport", {distance = math.floor(distance)})
+            rootPart.CFrame = CFrame.new(data.LastPosition)
+            return true
+        end
+    end
+    
+    data.LastPosition = rootPart.Position
+    return false
 end
 
-function AntiCheat:CheckJump(player, character)
-	if not self.Config.Jump or not self.Config.Jump.Enabled then return false end
-	if self.RoleSystem:CanBypass(player, "Jump") then return false end
-
-	local humanoid = character:FindFirstChild("Humanoid")
-	if not humanoid then return false end
-
-	local power = humanoid.JumpPower
-	local height = humanoid.JumpHeight
-	local maxPower = self.Config.Jump.MaxPower or 50
-	local maxHeight = self.Config.Jump.MaxHeight or 15
-
-	if power > maxPower or height > maxHeight then
-		self:LogViolation(player, "Jump", {power = math.floor(power), height = math.floor(height)})
-
-		if self.Config.Jump.AutoReset then
-			humanoid.JumpPower = maxPower
-			humanoid.JumpHeight = maxHeight
-		end
-		return true
-	end
-	return false
-end
-
+-- NOCLIP DETECTION
 function AntiCheat:CheckNoClip(player, character)
-	if not self.Config.NoClip or not self.Config.NoClip.Enabled then return false end
-	if self.RoleSystem:CanBypass(player, "NoClip") then return false end
-
-	local rootPart = character:FindFirstChild("HumanoidRootPart")
-	if not rootPart then return false end
-
-	if rootPart.CanCollide == false then
-		local humanoid = character:FindFirstChild("Humanoid")
-		if humanoid and humanoid:GetState() ~= Enum.HumanoidStateType.Dead then
-			self:LogViolation(player, "NoClip", {})
-
-			if self.Config.NoClip.AutoFix then
-				rootPart.CanCollide = true
-			end
-			return true
-		end
-	end
-	return false
+    if not self.Settings.NoClip then return false end
+    
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return false end
+    
+    if rootPart.CanCollide == false then
+        local humanoid = character:FindFirstChild("Humanoid")
+        if humanoid and humanoid:GetState() ~= Enum.HumanoidStateType.Dead then
+            self:LogViolation(player, "NoClip", {})
+            rootPart.CanCollide = true
+            return true
+        end
+    end
+    return false
 end
 
+-- LOG VIOLATION
 function AntiCheat:LogViolation(player, violationType, data)
-	local userId = player.UserId
+    local userId = player.UserId
+    
+    if not self.Violations[userId] then
+        self.Violations[userId] = {}
+    end
+    
+    table.insert(self.Violations[userId], {
+        type = violationType,
+        data = data,
+        time = tick()
+    })
+    
+    local count = #self.Violations[userId]
+    
+    self.Statistics.TotalDetections = self.Statistics.TotalDetections + 1
+    self.Statistics.DetectionsByType[violationType] = (self.Statistics.DetectionsByType[violationType] or 0) + 1
+    
+    if self.PlayerData[userId] then
+        self.PlayerData[userId].ViolationCount = count
+    end
+    
+    -- Log
+    local dataStr = ""
+    for k, v in pairs(data) do
+        dataStr = dataStr .. k .. "=" .. tostring(v) .. " "
+    end
+    warn(string.format("[reiAnC] %s (%d) - %s | %s| Count: %d", 
+        player.Name, userId, violationType, dataStr, count))
+    
+    -- Punishment
+    if count >= 3 then
+        self:KickPlayer(player, violationType)
+    end
+end
 
-	if not self.Violations[userId] then
-		self.Violations[userId] = {}
-	end
+function AntiCheat:KickPlayer(player, reason)
+    self.Statistics.PlayersKicked = self.Statistics.PlayersKicked + 1
+    player:Kick("[reiAnC] Anti-Cheat Detection: " .. reason)
+end
 
-	table.insert(self.Violations[userId], {
-		type = violationType,
-		data = data,
-		time = tick()
-	})
+function AntiCheat:BanPlayer(player)
+    table.insert(self.BannedUsers, {
+        userId = player.UserId,
+        username = player.Name,
+        time = os.time(),
+        date = os.date("%Y-%m-%d %H:%M:%S")
+    })
+    self.Statistics.PlayersBanned = self.Statistics.PlayersBanned + 1
+    player:Kick("[reiAnC] You have been banned from this game")
+end
 
-	local count = #self.Violations[userId]
-
-	-- Log to console
-	if self.Config.Punishment and self.Config.Punishment.LogViolations then
-		local dataStr = ""
-		for k, v in pairs(data) do
-			dataStr = dataStr .. k .. "=" .. tostring(v) .. " "
-		end
-		warn(string.format("[reiAnC] %s (%d) - %s | %s| Violations: %d", 
-			player.Name, userId, violationType, dataStr, count))
-	end
-
-	-- Punishment
-	if self.Config.Punishment then
-		if self.Config.Punishment.AutoKick then
-			player:Kick("[reiAnC] Anti-Cheat Detection: " .. violationType)
-		elseif self.Config.Punishment.AutoBan and count >= (self.Config.Punishment.MaxViolations or 3) then
-			player:Kick("[reiAnC] Multiple violations - Banned")
-		end
-	end
+function AntiCheat:UnbanPlayer(userId)
+    for i, ban in ipairs(self.BannedUsers) do
+        if ban.userId == userId then
+            table.remove(self.BannedUsers, i)
+            return true
+        end
+    end
+    return false
 end
 
 function AntiCheat:StartMonitoring()
-	local interval = self.Config.CheckInterval or 0.1
-	local lastCheck = tick()
-
-	RunService.Heartbeat:Connect(function()
-		if not self.Active then return end
-
-		local now = tick()
-		if now - lastCheck < interval then return end
-		lastCheck = now
-
-		for _, player in ipairs(Players:GetPlayers()) do
-			local character = player.Character
-			if character and character:FindFirstChild("HumanoidRootPart") and character:FindFirstChild("Humanoid") then
-				self:CheckSpeed(player, character)
-				self:CheckFly(player, character)
-				self:CheckTeleport(player, character)
-				self:CheckJump(player, character)
-				self:CheckNoClip(player, character)
-			end
-		end
-	end)
-
-	-- Property change monitoring
-	Players.PlayerAdded:Connect(function(player)
-		player.CharacterAdded:Connect(function(character)
-			local humanoid = character:WaitForChild("Humanoid", 5)
-			if humanoid then
-				humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
-					if character and character.Parent then
-						self:CheckSpeed(player, character)
-					end
-				end)
-
-				humanoid:GetPropertyChangedSignal("JumpPower"):Connect(function()
-					if character and character.Parent then
-						self:CheckJump(player, character)
-					end
-				end)
-
-				humanoid:GetPropertyChangedSignal("JumpHeight"):Connect(function()
-					if character and character.Parent then
-						self:CheckJump(player, character)
-					end
-				end)
-			end
-		end)
-	end)
+    local interval = 0.1
+    local lastCheck = tick()
+    
+    RunService.Heartbeat:Connect(function()
+        local now = tick()
+        if now - lastCheck < interval then return end
+        lastCheck = now
+        
+        for _, player in ipairs(Players:GetPlayers()) do
+            local character = player.Character
+            if character and character:FindFirstChild("HumanoidRootPart") and character:FindFirstChild("Humanoid") then
+                pcall(function()
+                    self:CheckSpeed(player, character)
+                    self:CheckFly(player, character)
+                    self:CheckTeleport(player, character)
+                    self:CheckNoClip(player, character)
+                end)
+            end
+        end
+    end)
 end
 
 -- ============================================
--- GUI SYSTEM
+-- PERMISSION SYSTEM
 -- ============================================
-local GUISystem = {}
+local PermissionSystem = {}
+PermissionSystem.__index = PermissionSystem
 
-function GUISystem.Create(player, config, antiCheat, roleSystem)
-	local success, playerGui = pcall(function()
-		return player:WaitForChild("PlayerGui", 5)
-	end)
+function PermissionSystem.new(config)
+    local self = setmetatable({}, PermissionSystem)
+    self.Permissions = {
+        Owner = {},
+        Developer = {},
+        Admin = {},
+        Moderator = {}
+    }
+    
+    -- Add game creator as owner
+    table.insert(self.Permissions.Owner, {
+        userId = game.CreatorId,
+        username = "Game Owner",
+        addedDate = os.date("%Y-%m-%d")
+    })
+    
+    return self
+end
 
-	if not success or not playerGui then
-		warn("[reiAnC] Could not get PlayerGui for " .. player.Name)
-		return
-	end
+function PermissionSystem:AddUser(role, userId, username)
+    if not self.Permissions[role] then return false end
+    
+    -- Check if already exists
+    for _, user in ipairs(self.Permissions[role]) do
+        if user.userId == userId then
+            return false
+        end
+    end
+    
+    table.insert(self.Permissions[role], {
+        userId = userId,
+        username = username,
+        addedDate = os.date("%Y-%m-%d")
+    })
+    
+    return true
+end
 
-	if playerGui:FindFirstChild("reiAnC_GUI") then
-		playerGui:FindFirstChild("reiAnC_GUI"):Destroy()
-	end
+function PermissionSystem:RemoveUser(role, userId)
+    if not self.Permissions[role] then return false end
+    
+    for i, user in ipairs(self.Permissions[role]) do
+        if user.userId == userId then
+            table.remove(self.Permissions[role], i)
+            return true
+        end
+    end
+    
+    return false
+end
 
-	local rank = roleSystem:GetRank(player)
-	local autoShowRank = config.AutoShowGUIForRank or 1
+function PermissionSystem:GetUserRole(userId)
+    for role, users in pairs(self.Permissions) do
+        for _, user in ipairs(users) do
+            if user.userId == userId then
+                return role
+            end
+        end
+    end
+    return nil
+end
 
-	if rank < autoShowRank then
-		return
-	end
-
-	local screenGui = Instance.new("ScreenGui")
-	screenGui.Name = "reiAnC_GUI"
-	screenGui.ResetOnSpawn = false
-	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-
-	-- Settings Button
-	local btn = Instance.new("ImageButton")
-	btn.Name = "SettingsButton"
-	btn.Parent = screenGui
-	btn.AnchorPoint = Vector2.new(0.5, 0)
-	btn.Position = UDim2.new(0.5, 0, 0, 10)
-	btn.Size = UDim2.new(0, 50, 0, 50)
-	btn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-	btn.BorderSizePixel = 0
-	btn.Image = "rbxassetid://3926305904"
-	btn.ImageColor3 = Color3.fromRGB(255, 255, 255)
-
-	local btnCorner = Instance.new("UICorner")
-	btnCorner.CornerRadius = UDim.new(1, 0)
-	btnCorner.Parent = btn
-
-	local btnGradient = Instance.new("UIGradient")
-	btnGradient.Color = ColorSequence.new{
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(55, 55, 55)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(35, 35, 35))
-	}
-	btnGradient.Rotation = 90
-	btnGradient.Parent = btn
-
-	local btnStroke = Instance.new("UIStroke")
-	btnStroke.Color = Color3.fromRGB(70, 70, 70)
-	btnStroke.Thickness = 2
-	btnStroke.Parent = btn
-
-	-- Settings Panel
-	local panel = Instance.new("Frame")
-	panel.Name = "SettingsPanel"
-	panel.Parent = screenGui
-	panel.AnchorPoint = Vector2.new(0.5, 0.5)
-	panel.Position = UDim2.new(0.5, 0, 0.5, 0)
-	panel.Size = UDim2.new(0, 500, 0, 400)
-	panel.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-	panel.BorderSizePixel = 0
-	panel.Visible = false
-
-	local panelCorner = Instance.new("UICorner")
-	panelCorner.CornerRadius = UDim.new(0, 12)
-	panelCorner.Parent = panel
-
-	local panelGradient = Instance.new("UIGradient")
-	panelGradient.Color = ColorSequence.new{
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(40, 40, 40)),
-		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(25, 25, 25)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(40, 40, 40))
-	}
-	panelGradient.Rotation = 90
-	panelGradient.Parent = panel
-
-	local panelStroke = Instance.new("UIStroke")
-	panelStroke.Color = Color3.fromRGB(60, 60, 60)
-	panelStroke.Thickness = 2
-	panelStroke.Parent = panel
-
-	-- Title
-	local title = Instance.new("TextLabel")
-	title.Parent = panel
-	title.Size = UDim2.new(1, 0, 0, 50)
-	title.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-	title.BorderSizePixel = 0
-	title.Font = Enum.Font.GothamBold
-	title.Text = "reiAnC Settings"
-	title.TextColor3 = Color3.fromRGB(255, 255, 255)
-	title.TextSize = 20
-
-	local titleCorner = Instance.new("UICorner")
-	titleCorner.CornerRadius = UDim.new(0, 12)
-	titleCorner.Parent = title
-
-	local closeBtn = Instance.new("TextButton")
-	closeBtn.Parent = title
-	closeBtn.AnchorPoint = Vector2.new(1, 0.5)
-	closeBtn.Position = UDim2.new(1, -10, 0.5, 0)
-	closeBtn.Size = UDim2.new(0, 30, 0, 30)
-	closeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-	closeBtn.BorderSizePixel = 0
-	closeBtn.Font = Enum.Font.GothamBold
-	closeBtn.Text = "X"
-	closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-	closeBtn.TextSize = 16
-
-	local closeBtnCorner = Instance.new("UICorner")
-	closeBtnCorner.CornerRadius = UDim.new(1, 0)
-	closeBtnCorner.Parent = closeBtn
-
-	local infoLabel = Instance.new("TextLabel")
-	infoLabel.Parent = panel
-	infoLabel.Position = UDim2.new(0, 20, 0, 70)
-	infoLabel.Size = UDim2.new(1, -40, 0, 300)
-	infoLabel.BackgroundTransparency = 1
-	infoLabel.Font = Enum.Font.Gotham
-	infoLabel.Text = "Anti-Cheat System Active\n\nYour Rank: " .. (roleSystem:GetRank(player) or 0) .. "\n\nSettings can be modified in the Config module.\n\nType /ac to toggle this panel."
-	infoLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-	infoLabel.TextSize = 16
-	infoLabel.TextWrapped = true
-	infoLabel.TextYAlignment = Enum.TextYAlignment.Top
-
-	btn.MouseButton1Click:Connect(function()
-		panel.Visible = not panel.Visible
-	end)
-
-	closeBtn.MouseButton1Click:Connect(function()
-		panel.Visible = false
-	end)
-
-	btn.MouseEnter:Connect(function()
-		btn:TweenSize(UDim2.new(0, 55, 0, 55), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.2, true)
-	end)
-
-	btn.MouseLeave:Connect(function()
-		btn:TweenSize(UDim2.new(0, 50, 0, 50), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.2, true)
-	end)
-
-	screenGui.Parent = playerGui
-	print("[reiAnC] GUI created for " .. player.Name)
+function PermissionSystem:CanAccess(userId)
+    return self:GetUserRole(userId) ~= nil
 end
 
 -- ============================================
--- COMMAND SYSTEM
+-- MODERN GUI SYSTEM
 -- ============================================
-local function setupCommands(config, antiCheat, roleSystem)
-	local enableCommands = true
-	if config.EnableChatCommands ~= nil then
-		enableCommands = config.EnableChatCommands
-	end
-
-	if not enableCommands then return end
-
-	local command = config.ShowGUICommand or "/ac"
-
-	Players.PlayerAdded:Connect(function(player)
-		player.Chatted:Connect(function(message)
-			if message:lower() == command:lower() then
-				local success, playerGui = pcall(function()
-					return player:WaitForChild("PlayerGui", 5)
-				end)
-
-				if not success or not playerGui then return end
-
-				local gui = playerGui:FindFirstChild("reiAnC_GUI")
-
-				if gui then
-					local btn = gui:FindFirstChild("SettingsButton")
-					if btn then
-						btn.Visible = not btn.Visible
-					end
-				else
-					GUISystem.Create(player, config, antiCheat, roleSystem)
-				end
-			end
-		end)
-	end)
+local function CreateGUI(player, antiCheat, permissions, userData)
+    local playerGui = player:WaitForChild("PlayerGui")
+    
+    if playerGui:FindFirstChild("reiAnC_GUI") then
+        playerGui:FindFirstChild("reiAnC_GUI"):Destroy()
+    end
+    
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "reiAnC_GUI"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    ScreenGui.DisplayOrder = 100
+    
+    -- Main Container
+    local MainContainer = Instance.new("Frame")
+    MainContainer.Name = "MainContainer"
+    MainContainer.Parent = ScreenGui
+    MainContainer.AnchorPoint = Vector2.new(0.5, 0.5)
+    MainContainer.Position = UDim2.new(0.5, 0, 0.5, 0)
+    MainContainer.Size = UDim2.new(0, 800, 0, 550)
+    MainContainer.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+    MainContainer.BackgroundTransparency = 0.4
+    MainContainer.BorderSizePixel = 0
+    
+    local MainCorner = Instance.new("UICorner")
+    MainCorner.CornerRadius = UDim.new(0, 8)
+    MainCorner.Parent = MainContainer
+    
+    local Shadow = Instance.new("ImageLabel")
+    Shadow.Name = "Shadow"
+    Shadow.Parent = MainContainer
+    Shadow.BackgroundTransparency = 1
+    Shadow.Position = UDim2.new(0, -20, 0, -20)
+    Shadow.Size = UDim2.new(1, 40, 1, 40)
+    Shadow.ZIndex = 0
+    Shadow.Image = "rbxassetid://5554236805"
+    Shadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
+    Shadow.ImageTransparency = 0.7
+    Shadow.ScaleType = Enum.ScaleType.Slice
+    Shadow.SliceCenter = Rect.new(23, 23, 277, 277)
+    
+    -- Header
+    local Header = Instance.new("Frame")
+    Header.Name = "Header"
+    Header.Parent = MainContainer
+    Header.Size = UDim2.new(1, 0, 0, 60)
+    Header.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    Header.BackgroundTransparency = 0.3
+    Header.BorderSizePixel = 0
+    
+    local HeaderCorner = Instance.new("UICorner")
+    HeaderCorner.CornerRadius = UDim.new(0, 8)
+    HeaderCorner.Parent = Header
+    
+    local HeaderCover = Instance.new("Frame")
+    HeaderCover.Parent = Header
+    HeaderCover.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    HeaderCover.BackgroundTransparency = 0.3
+    HeaderCover.BorderSizePixel = 0
+    HeaderCover.Position = UDim2.new(0, 0, 1, -8)
+    HeaderCover.Size = UDim2.new(1, 0, 0, 8)
+    
+    local Title = Instance.new("TextLabel")
+    Title.Parent = Header
+    Title.Position = UDim2.new(0, 20, 0, 0)
+    Title.Size = UDim2.new(0, 200, 1, 0)
+    Title.BackgroundTransparency = 1
+    Title.Font = Enum.Font.GothamBold
+    Title.Text = "reiAnC"
+    Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Title.TextSize = 24
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    
+    -- Profile Button
+    local ProfileBtn = Instance.new("ImageButton")
+    ProfileBtn.Name = "ProfileButton"
+    ProfileBtn.Parent = Header
+    ProfileBtn.AnchorPoint = Vector2.new(1, 0.5)
+    ProfileBtn.Position = UDim2.new(1, -20, 0.5, 0)
+    ProfileBtn.Size = UDim2.new(0, 40, 0, 40)
+    ProfileBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    ProfileBtn.BackgroundTransparency = 0.3
+    ProfileBtn.BorderSizePixel = 0
+    ProfileBtn.Image = "rbxassetid://3926307971"
+    ProfileBtn.ImageColor3 = Color3.fromRGB(255, 255, 255)
+    
+    local ProfileCorner = Instance.new("UICorner")
+    ProfileCorner.CornerRadius = UDim.new(1, 0)
+    ProfileCorner.Parent = ProfileBtn
+    
+    -- Profile Frame (Hidden by default)
+    local ProfileFrame = Instance.new("Frame")
+    ProfileFrame.Name = "ProfileFrame"
+    ProfileFrame.Parent = ScreenGui
+    ProfileFrame.AnchorPoint = Vector2.new(1, 0)
+    ProfileFrame.Position = UDim2.new(0.5, 390, 0.5, -275)
+    ProfileFrame.Size = UDim2.new(0, 250, 0, 200)
+    ProfileFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    ProfileFrame.BackgroundTransparency = 0.4
+    ProfileFrame.BorderSizePixel = 0
+    ProfileFrame.Visible = false
+    
+    local ProfileFrameCorner = Instance.new("UICorner")
+    ProfileFrameCorner.CornerRadius = UDim.new(0, 8)
+    ProfileFrameCorner.Parent = ProfileFrame
+    
+    local ProfileIcon = Instance.new("ImageLabel")
+    ProfileIcon.Parent = ProfileFrame
+    ProfileIcon.Position = UDim2.new(0.5, 0, 0, 20)
+    ProfileIcon.Size = UDim2.new(0, 60, 0, 60)
+    ProfileIcon.AnchorPoint = Vector2.new(0.5, 0)
+    ProfileIcon.BackgroundTransparency = 1
+    ProfileIcon.Image = "rbxassetid://3926307971"
+    ProfileIcon.ImageColor3 = Color3.fromRGB(255, 255, 255)
+    
+    local ProfileIconCorner = Instance.new("UICorner")
+    ProfileIconCorner.CornerRadius = UDim.new(1, 0)
+    ProfileIconCorner.Parent = ProfileIcon
+    
+    local ProfileInfo = Instance.new("TextLabel")
+    ProfileInfo.Parent = ProfileFrame
+    ProfileInfo.Position = UDim2.new(0, 20, 0, 90)
+    ProfileInfo.Size = UDim2.new(1, -40, 0, 100)
+    ProfileInfo.BackgroundTransparency = 1
+    ProfileInfo.Font = Enum.Font.Gotham
+    ProfileInfo.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ProfileInfo.TextSize = 13
+    ProfileInfo.TextWrapped = true
+    ProfileInfo.TextYAlignment = Enum.TextYAlignment.Top
+    
+    local expiryText = "Lifetime"
+    if userData.expiry then
+        expiryText = os.date("%Y-%m-%d", userData.expiry)
+    end
+    
+    ProfileInfo.Text = string.format(
+        "User ID: %d\nUsername: %s\nTier: %s\nExpiry: %s",
+        player.UserId,
+        player.Name,
+        userData.tier:upper(),
+        expiryText
+    )
+    
+    ProfileBtn.MouseButton1Click:Connect(function()
+        ProfileFrame.Visible = not ProfileFrame.Visible
+        local sound = Instance.new("Sound")
+        sound.SoundId = SOUND_CLICK
+        sound.Volume = 0.5
+        sound.Parent = ScreenGui
+        sound:Play()
+        game:GetService("Debris"):AddItem(sound, 2)
+    end)
+    
+    -- Tab Container
+    local TabContainer = Instance.new("Frame")
+    TabContainer.Name = "TabContainer"
+    TabContainer.Parent = MainContainer
+    TabContainer.Position = UDim2.new(0, 0, 0, 60)
+    TabContainer.Size = UDim2.new(1, 0, 0, 50)
+    TabContainer.BackgroundTransparency = 1
+    
+    local TabLayout = Instance.new("UIListLayout")
+    TabLayout.Parent = TabContainer
+    TabLayout.FillDirection = Enum.FillDirection.Horizontal
+    TabLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    TabLayout.Padding = UDim.new(0, 15)
+    TabLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    
+    -- Tab Icons: Updates, Settings, Permissions
+    local tabs = {
+        {Name = "Updates", Icon = "rbxassetid://3926305904", LayoutOrder = 1},
+        {Name = "Settings", Icon = "rbxassetid://3926307971", LayoutOrder = 2},
+        {Name = "Permissions", Icon = "rbxassetid://3926305904", LayoutOrder = 3}
+    }
+    
+    local tabButtons = {}
+    local contentFrames = {}
+    
+    -- Main Frame (Content Area)
+    local MainFrame = Instance.new("Frame")
+    MainFrame.Name = "MainFrame"
+    MainFrame.Parent = MainContainer
+    MainFrame.Position = UDim2.new(0, 10, 0, 120)
+    MainFrame.Size = UDim2.new(1, -20, 1, -180)
+    MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    MainFrame.BackgroundTransparency = 0.3
+    MainFrame.BorderSizePixel = 0
+    
+    local MainFrameCorner = Instance.new("UICorner")
+    MainFrameCorner.CornerRadius = UDim.new(0, 8)
+    MainFrameCorner.Parent = MainFrame
+    
+    -- Create Tabs
+    for i, tabInfo in ipairs(tabs) do
+        local TabButton = Instance.new("ImageButton")
+        TabButton.Name = tabInfo.Name .. "Tab"
+        TabButton.Parent = TabContainer
+        TabButton.Size = UDim2.new(0, 45, 0, 45)
+        TabButton.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+        TabButton.BackgroundTransparency = 0.3
+        TabButton.BorderSizePixel = 0
+        TabButton.Image = tabInfo.Icon
+        TabButton.ImageColor3 = Color3.fromRGB(200, 200, 200)
+        TabButton.LayoutOrder = tabInfo.LayoutOrder
+        
+        local TabCorner = Instance.new("UICorner")
+        TabCorner.CornerRadius = UDim.new(0, 8)
+        TabCorner.Parent = TabButton
+        
+        local TabStroke = Instance.new("UIStroke")
+        TabStroke.Color = Color3.fromRGB(60, 60, 60)
+        TabStroke.Thickness = 2
+        TabStroke.Transparency = 0.5
+        TabStroke.Parent = TabButton
+        
+        tabButtons[tabInfo.Name] = {
+            Button = TabButton,
+            Stroke = TabStroke
+        }
+        
+        -- Content Frame for each tab
+        local ContentFrame = Instance.new("ScrollingFrame")
+        ContentFrame.Name = tabInfo.Name .. "Content"
+        ContentFrame.Parent = MainFrame
+        ContentFrame.Size = UDim2.new(1, 0, 1, 0)
+        ContentFrame.BackgroundTransparency = 1
+        ContentFrame.BorderSizePixel = 0
+        ContentFrame.ScrollBarThickness = 6
+        ContentFrame.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 80)
+        ContentFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+        ContentFrame.Visible = false
+        
+        local ContentLayout = Instance.new("UIListLayout")
+        ContentLayout.Parent = ContentFrame
+        ContentLayout.Padding = UDim.new(0, 10)
+        ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        
+        local ContentPadding = Instance.new("UIPadding")
+        ContentPadding.Parent = ContentFrame
+        ContentPadding.PaddingLeft = UDim.new(0, 15)
+        ContentPadding.PaddingRight = UDim.new(0, 15)
+        ContentPadding.PaddingTop = UDim.new(0, 15)
+        ContentPadding.PaddingBottom = UDim.new(0, 15)
+        
+        contentFrames[tabInfo.Name] = ContentFrame
+        
+        -- Tab functionality
+        TabButton.MouseButton1Click:Connect(function()
+            -- Play sound
+            local sound = Instance.new("Sound")
+            sound.SoundId = SOUND_CLICK
+            sound.Volume = 0.5
+            sound.Parent = ScreenGui
+            sound:Play()
+            game:GetService("Debris"):AddItem(sound, 2)
+            
+            -- Hide all content
+            for _, frame in pairs(contentFrames) do
+                frame.Visible = false
+            end
+            
+            -- Reset all tabs
+            for _, tab in pairs(tabButtons) do
+                TweenService:Create(tab.Button, TweenInfo.new(0.2), {
+                    Size = UDim2.new(0, 45, 0, 45),
+                    ImageColor3 = Color3.fromRGB(200, 200, 200)
+                }):Play()
+                TweenService:Create(tab.Stroke, TweenInfo.new(0.2), {
+                    Color = Color3.fromRGB(60, 60, 60),
+                    Transparency = 0.5
+                }):Play()
+            end
+            
+            -- Show selected content
+            ContentFrame.Visible = true
+            
+            -- Highlight selected tab
+            TweenService:Create(TabButton, TweenInfo.new(0.2), {
+                Size = UDim2.new(0, 55, 0, 55),
+                ImageColor3 = Color3.fromRGB(255, 255, 255)
+            }):Play()
+            TweenService:Create(TabStroke, TweenInfo.new(0.2), {
+                Color = Color3.fromRGB(100, 150, 255),
+                Transparency = 0
+            }):Play()
+        end)
+        
+        -- Hover effect
+        TabButton.MouseEnter:Connect(function()
+            if not ContentFrame.Visible then
+                TweenService:Create(TabButton, TweenInfo.new(0.1), {
+                    ImageColor3 = Color3.fromRGB(255, 255, 255)
+                }):Play()
+            end
+        end)
+        
+        TabButton.MouseLeave:Connect(function()
+            if not ContentFrame.Visible then
+                TweenService:Create(TabButton, TweenInfo.new(0.1), {
+                    ImageColor3 = Color3.fromRGB(200, 200, 200)
+                }):Play()
+            end
+        end)
+    end
+    
+    -- Populate Settings Tab
+    local function CreateToggle(parent, name, enabled, callback)
+        local ToggleFrame = Instance.new("Frame")
+        ToggleFrame.Parent = parent
+        ToggleFrame.Size = UDim2.new(1, -30, 0, 45)
+        ToggleFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+        ToggleFrame.BackgroundTransparency = 0.3
+        ToggleFrame.BorderSizePixel = 0
+        
+        local ToggleCorner = Instance.new("UICorner")
+        ToggleCorner.CornerRadius = UDim.new(0, 8)
+        ToggleCorner.Parent = ToggleFrame
+        
+        local Label = Instance.new("TextLabel")
+        Label.Parent = ToggleFrame
+        Label.Position = UDim2.new(0, 15, 0, 0)
+        Label.Size = UDim2.new(1, -70, 1, 0)
+        Label.BackgroundTransparency = 1
+        Label.Font = Enum.Font.GothamMedium
+        Label.Text = name
+        Label.TextColor3 = Color3.fromRGB(255, 255, 255)
+        Label.TextSize = 14
+        Label.TextXAlignment = Enum.TextXAlignment.Left
+        
+        local Toggle = Instance.new("TextButton")
+        Toggle.Parent = ToggleFrame
+        Toggle.AnchorPoint = Vector2.new(1, 0.5)
+        Toggle.Position = UDim2.new(1, -15, 0.5, 0)
+        Toggle.Size = UDim2.new(0, 45, 0, 25)
+        Toggle.BackgroundColor3 = enabled and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(150, 50, 50)
+        Toggle.BorderSizePixel = 0
+        Toggle.Text = ""
+        Toggle.AutoButtonColor = false
+        
+        local ToggleButtonCorner = Instance.new("UICorner")
+        ToggleButtonCorner.CornerRadius = UDim.new(1, 0)
+        ToggleButtonCorner.Parent = Toggle
+        
+        local ToggleIndicator = Instance.new("Frame")
+        ToggleIndicator.Parent = Toggle
+        ToggleIndicator.AnchorPoint = Vector2.new(0, 0.5)
+        ToggleIndicator.Position = enabled and UDim2.new(1, -22, 0.5, 0) or UDim2.new(0, 3, 0.5, 0)
+        ToggleIndicator.Size = UDim2.new(0, 19, 0, 19)
+        ToggleIndicator.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        ToggleIndicator.BorderSizePixel = 0
+        
+        local IndicatorCorner = Instance.new("UICorner")
+        IndicatorCorner.CornerRadius = UDim.new(1, 0)
+        IndicatorCorner.Parent = ToggleIndicator
+        
+        local state = enabled
+        
+        Toggle.MouseButton1Click:Connect(function()
+            state = not state
+            
+            -- Play sound
+            local sound = Instance.new("Sound")
+            sound.SoundId = SOUND_TOGGLE
+            sound.Volume = 0.3
+            sound.Parent = ScreenGui
+            sound:Play()
+            game:GetService("Debris"):AddItem(sound, 2)
+            
+            -- Animate
+            TweenService:Create(Toggle, TweenInfo.new(0.2), {
+                BackgroundColor3 = state and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(150, 50, 50)
+            }):Play()
+            
+            TweenService:Create(ToggleIndicator, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+                Position = state and UDim2.new(1, -22, 0.5, 0) or UDim2.new(0, 3, 0.5, 0)
+            }):Play()
+            
+            callback(state)
+        end)
+        
+        return ToggleFrame
+    end
+    
+    local settingsContent = contentFrames.Settings
+    
+    CreateToggle(settingsContent, "Speed Detection", antiCheat.Settings.Speed, function(state)
+        antiCheat.Settings.Speed = state
+        print("[reiAnC] Speed Detection:", state)
+    end)
+    
+    CreateToggle(settingsContent, "Fly Detection", antiCheat.Settings.Fly, function(state)
+        antiCheat.Settings.Fly = state
+        print("[reiAnC] Fly Detection:", state)
+    end)
+    
+    CreateToggle(settingsContent, "Teleport Detection", antiCheat.Settings.Teleport, function(state)
+        antiCheat.Settings.Teleport = state
+        print("[reiAnC] Teleport Detection:", state)
+    end)
+    
+    CreateToggle(settingsContent, "Jump Detection", antiCheat.Settings.Jump, function(state)
+        antiCheat.Settings.Jump = state
+        print("[reiAnC] Jump Detection:", state)
+    end)
+    
+    CreateToggle(settingsContent, "NoClip Detection", antiCheat.Settings.NoClip, function(state)
+        antiCheat.Settings.NoClip = state
+        print("[reiAnC] NoClip Detection:", state)
+    end)
+    
+    CreateToggle(settingsContent, "Infinite Jump Detection", antiCheat.Settings.InfiniteJump, function(state)
+        antiCheat.Settings.InfiniteJump = state
+        print("[reiAnC] Infinite Jump Detection:", state)
+    end)
+    
+    CreateToggle(settingsContent, "God Mode Detection", antiCheat.Settings.GodMode, function(state)
+        antiCheat.Settings.GodMode = state
+        print("[reiAnC] God Mode Detection:", state)
+    end)
+    
+    CreateToggle(settingsContent, "Remote Spy Detection", antiCheat.Settings.RemoteSpy, function(state)
+        antiCheat.Settings.RemoteSpy = state
+        print("[reiAnC] Remote Spy Detection:", state)
+    end)
+    
+    CreateToggle(settingsContent, "Executor Detection", antiCheat.Settings.ExecutorDetection, function(state)
+        antiCheat.Settings.ExecutorDetection = state
+        print("[reiAnC] Executor Detection:", state)
+    end)
+    
+    CreateToggle(settingsContent, "Anti-Exploit Protection", antiCheat.Settings.AntiExploit, function(state)
+        antiCheat.Settings.AntiExploit = state
+        print("[reiAnC] Anti-Exploit Protection:", state)
+    end)
+    
+    -- Update canvas size
+    task.wait()
+    settingsContent.CanvasSize = UDim2.new(0, 0, 0, settingsContent.UIListLayout.AbsoluteContentSize.Y + 30)
+    
+    -- Populate Updates Tab
+    local updatesContent = contentFrames.Updates
+    
+    local updates = {
+        {date = "2025-01-04", title = "v2.0 Released", desc = "Complete system overhaul with modern GUI"},
+        {date = "2025-01-03", title = "Remote Spy Added", desc = "Advanced detection for executor scanning"},
+        {date = "2025-01-02", title = "GitHub Integration", desc = "System now loads from GitHub for easy updates"},
+        {date = "2025-01-01", title = "License System", desc = "Implemented whitelist-based license validation"}
+    }
+    
+    for i, update in ipairs(updates) do
+        local UpdateFrame = Instance.new("Frame")
+        UpdateFrame.Parent = updatesContent
+        UpdateFrame.Size = UDim2.new(1, -30, 0, 80)
+        UpdateFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+        UpdateFrame.BackgroundTransparency = 0.3
+        UpdateFrame.BorderSizePixel = 0
+        
+        local UpdateCorner = Instance.new("UICorner")
+        UpdateCorner.CornerRadius = UDim.new(0, 8)
+        UpdateCorner.Parent = UpdateFrame
+        
+        local DateLabel = Instance.new("TextLabel")
+        DateLabel.Parent = UpdateFrame
+        DateLabel.Position = UDim2.new(0, 15, 0, 10)
+        DateLabel.Size = UDim2.new(1, -30, 0, 15)
+        DateLabel.BackgroundTransparency = 1
+        DateLabel.Font = Enum.Font.GothamBold
+        DateLabel.Text = update.date
+        DateLabel.TextColor3 = Color3.fromRGB(100, 150, 255)
+        DateLabel.TextSize = 12
+        DateLabel.TextXAlignment = Enum.TextXAlignment.Left
+        
+        local TitleLabel = Instance.new("TextLabel")
+        TitleLabel.Parent = UpdateFrame
+        TitleLabel.Position = UDim2.new(0, 15, 0, 28)
+        TitleLabel.Size = UDim2.new(1, -30, 0, 18)
+        TitleLabel.BackgroundTransparency = 1
+        TitleLabel.Font = Enum.Font.GothamBold
+        TitleLabel.Text = update.title
+        TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        TitleLabel.TextSize = 14
+        TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+        
+        local DescLabel = Instance.new("TextLabel")
+        DescLabel.Parent = UpdateFrame
+        DescLabel.Position = UDim2.new(0, 15, 0, 48)
+        DescLabel.Size = UDim2.new(1, -30, 0, 25)
+        DescLabel.BackgroundTransparency = 1
+        DescLabel.Font = Enum.Font.Gotham
+        DescLabel.Text = update.desc
+        DescLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+        DescLabel.TextSize = 12
+        DescLabel.TextWrapped = true
+        DescLabel.TextXAlignment = Enum.TextXAlignment.Left
+        DescLabel.TextYAlignment = Enum.TextYAlignment.Top
+    end
+    
+    task.wait()
+    updatesContent.CanvasSize = UDim2.new(0, 0, 0, updatesContent.UIListLayout.AbsoluteContentSize.Y + 30)
+    
+    -- Populate Permissions Tab
+    local permissionsContent = contentFrames.Permissions
+    
+    -- Role Dropdown
+    local roles = {"Owner", "Developer", "Admin", "Moderator"}
+    
+    for roleIndex, role in ipairs(roles) do
+        local RoleFrame = Instance.new("Frame")
+        RoleFrame.Parent = permissionsContent
+        RoleFrame.Size = UDim2.new(1, -30, 0, 50)
+        RoleFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+        RoleFrame.BackgroundTransparency = 0.3
+        RoleFrame.BorderSizePixel = 0
+        RoleFrame.ClipsDescendants = false
+        
+        local RoleCorner = Instance.new("UICorner")
+        RoleCorner.CornerRadius = UDim.new(0, 8)
+        RoleCorner.Parent = RoleFrame
+        
+        local RoleButton = Instance.new("TextButton")
+        RoleButton.Parent = RoleFrame
+        RoleButton.Size = UDim2.new(1, 0, 0, 50)
+        RoleButton.BackgroundTransparency = 1
+        RoleButton.Font = Enum.Font.GothamBold
+        RoleButton.Text = role .. " ▼"
+        RoleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+        RoleButton.TextSize = 14
+        
+        local UserListFrame = Instance.new("Frame")
+        UserListFrame.Parent = RoleFrame
+        UserListFrame.Position = UDim2.new(0, 0, 1, 5)
+        UserListFrame.Size = UDim2.new(1, 0, 0, 0)
+        UserListFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+        UserListFrame.BackgroundTransparency = 0.3
+        UserListFrame.BorderSizePixel = 0
+        UserListFrame.Visible = false
+        UserListFrame.ClipsDescendants = true
+        
+        local UserListCorner = Instance.new("UICorner")
+        UserListCorner.CornerRadius = UDim.new(0, 8)
+        UserListCorner.Parent = UserListFrame
+        
+        local UserListLayout = Instance.new("UIListLayout")
+        UserListLayout.Parent = UserListFrame
+        UserListLayout.Padding = UDim.new(0, 5)
+        UserListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        
+        local UserListPadding = Instance.new("UIPadding")
+        UserListPadding.Parent = UserListFrame
+        UserListPadding.PaddingLeft = UDim.new(0, 10)
+        UserListPadding.PaddingRight = UDim.new(0, 10)
+        UserListPadding.PaddingTop = UDim.new(0, 10)
+        UserListPadding.PaddingBottom = UDim.new(0, 10)
+        
+        local isOpen = false
+        
+        RoleButton.MouseButton1Click:Connect(function()
+            isOpen = not isOpen
+            
+            -- Play sound
+            local sound = Instance.new("Sound")
+            sound.SoundId = SOUND_CLICK
+            sound.Volume = 0.3
+            sound.Parent = ScreenGui
+            sound:Play()
+            game:GetService("Debris"):AddItem(sound, 2)
+            
+            RoleButton.Text = role .. (isOpen and " ▲" or " ▼")
+            UserListFrame.Visible = isOpen
+            
+            if isOpen then
+                -- Clear existing
+                for _, child in ipairs(UserListFrame:GetChildren()) do
+                    if child:IsA("Frame") then
+                        child:Destroy()
+                    end
+                end
+                
+                -- Populate with users
+                local users = permissions.Permissions[role] or {}
+                
+                if #users == 0 then
+                    local EmptyLabel = Instance.new("TextLabel")
+                    EmptyLabel.Parent = UserListFrame
+                    EmptyLabel.Size = UDim2.new(1, -20, 0, 30)
+                    EmptyLabel.BackgroundTransparency = 1
+                    EmptyLabel.Font = Enum.Font.GothamItalic
+                    EmptyLabel.Text = "No users in this role"
+                    EmptyLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+                    EmptyLabel.TextSize = 12
+                else
+                    for _, user in ipairs(users) do
+                        local UserFrame = Instance.new("Frame")
+                        UserFrame.Parent = UserListFrame
+                        UserFrame.Size = UDim2.new(1, -20, 0, 35)
+                        UserFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+                        UserFrame.BackgroundTransparency = 0.3
+                        UserFrame.BorderSizePixel = 0
+                        
+                        local UserFrameCorner = Instance.new("UICorner")
+                        UserFrameCorner.CornerRadius = UDim.new(0, 6)
+                        UserFrameCorner.Parent = UserFrame
+                        
+                        local UserLabel = Instance.new("TextLabel")
+                        UserLabel.Parent = UserFrame
+                        UserLabel.Position = UDim2.new(0, 10, 0, 0)
+                        UserLabel.Size = UDim2.new(1, -50, 1, 0)
+                        UserLabel.BackgroundTransparency = 1
+                        UserLabel.Font = Enum.Font.Gotham
+                        UserLabel.Text = user.username .. " (" .. user.userId .. ")"
+                        UserLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+                        UserLabel.TextSize = 11
+                        UserLabel.TextXAlignment = Enum.TextXAlignment.Left
+                        
+                        if role ~= "Owner" then
+                            local RemoveBtn = Instance.new("TextButton")
+                            RemoveBtn.Parent = UserFrame
+                            RemoveBtn.AnchorPoint = Vector2.new(1, 0.5)
+                            RemoveBtn.Position = UDim2.new(1, -5, 0.5, 0)
+                            RemoveBtn.Size = UDim2.new(0, 25, 0, 25)
+                            RemoveBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+                            RemoveBtn.BorderSizePixel = 0
+                            RemoveBtn.Font = Enum.Font.GothamBold
+                            RemoveBtn.Text = "✕"
+                            RemoveBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+                            RemoveBtn.TextSize = 12
+                            
+                            local RemoveBtnCorner = Instance.new("UICorner")
+                            RemoveBtnCorner.CornerRadius = UDim.new(0, 4)
+                            RemoveBtnCorner.Parent = RemoveBtn
+                            
+                            RemoveBtn.MouseButton1Click:Connect(function()
+                                permissions:RemoveUser(role, user.userId)
+                                UserFrame:Destroy()
+                            end)
+                        end
+                    end
+                end
+                
+                task.wait()
+                local contentHeight = UserListLayout.AbsoluteContentSize.Y + 20
+                TweenService:Create(UserListFrame, TweenInfo.new(0.2), {
+                    Size = UDim2.new(1, 0, 0, math.min(contentHeight, 150))
+                }):Play()
+            else
+                TweenService:Create(UserListFrame, TweenInfo.new(0.2), {
+                    Size = UDim2.new(1, 0, 0, 0)
+                }):Play()
+                task.wait(0.2)
+                UserListFrame.Visible = false
+            end
+        end)
+    end
+    
+    -- Ban List Section
+    local BanListHeader = Instance.new("TextLabel")
+    BanListHeader.Parent = permissionsContent
+    BanListHeader.Size = UDim2.new(1, -30, 0, 30)
+    BanListHeader.BackgroundTransparency = 1
+    BanListHeader.Font = Enum.Font.GothamBold
+    BanListHeader.Text = "Ban List"
+    BanListHeader.TextColor3 = Color3.fromRGB(255, 100, 100)
+    BanListHeader.TextSize = 16
+    BanListHeader.TextXAlignment = Enum.TextXAlignment.Left
+    
+    local BanListFrame = Instance.new("Frame")
+    BanListFrame.Parent = permissionsContent
+    BanListFrame.Size = UDim2.new(1, -30, 0, 200)
+    BanListFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    BanListFrame.BackgroundTransparency = 0.3
+    BanListFrame.BorderSizePixel = 0
+    
+    local BanListCorner = Instance.new("UICorner")
+    BanListCorner.CornerRadius = UDim.new(0, 8)
+    BanListCorner.Parent = BanListFrame
+    
+    local BanListScroll = Instance.new("ScrollingFrame")
+    BanListScroll.Parent = BanListFrame
+    BanListScroll.Size = UDim2.new(1, 0, 1, 0)
+    BanListScroll.BackgroundTransparency = 1
+    BanListScroll.BorderSizePixel = 0
+    BanListScroll.ScrollBarThickness = 6
+    BanListScroll.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 80)
+    BanListScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    
+    local BanListLayout = Instance.new("UIListLayout")
+    BanListLayout.Parent = BanListScroll
+    BanListLayout.Padding = UDim.new(0, 5)
+    BanListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    
+    local BanListPadding = Instance.new("UIPadding")
+    BanListPadding.Parent = BanListScroll
+    BanListPadding.PaddingLeft = UDim.new(0, 10)
+    BanListPadding.PaddingRight = UDim.new(0, 10)
+    BanListPadding.PaddingTop = UDim.new(0, 10)
+    BanListPadding.PaddingBottom = UDim.new(0, 10)
+    
+    -- Function to refresh ban list
+    local function RefreshBanList()
+        for _, child in ipairs(BanListScroll:GetChildren()) do
+            if child:IsA("Frame") then
+                child:Destroy()
+            end
+        end
+        
+        if #antiCheat.BannedUsers == 0 then
+            local EmptyLabel = Instance.new("TextLabel")
+            EmptyLabel.Parent = BanListScroll
+            EmptyLabel.Size = UDim2.new(1, -20, 0, 40)
+            EmptyLabel.BackgroundTransparency = 1
+            EmptyLabel.Font = Enum.Font.GothamItalic
+            EmptyLabel.Text = "No banned users"
+            EmptyLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+            EmptyLabel.TextSize = 12
+        else
+            for i, ban in ipairs(antiCheat.BannedUsers) do
+                local BanFrame = Instance.new("Frame")
+                BanFrame.Parent = BanListScroll
+                BanFrame.Size = UDim2.new(1, -20, 0, 45)
+                BanFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+                BanFrame.BackgroundTransparency = 0.3
+                BanFrame.BorderSizePixel = 0
+                
+                local BanFrameCorner = Instance.new("UICorner")
+                BanFrameCorner.CornerRadius = UDim.new(0, 6)
+                BanFrameCorner.Parent = BanFrame
+                
+                local BanInfo = Instance.new("TextLabel")
+                BanInfo.Parent = BanFrame
+                BanInfo.Position = UDim2.new(0, 10, 0, 0)
+                BanInfo.Size = UDim2.new(1, -90, 1, 0)
+                BanInfo.BackgroundTransparency = 1
+                BanInfo.Font = Enum.Font.Gotham
+                BanInfo.Text = ban.username .. " (" .. ban.userId .. ")\n" .. ban.date
+                BanInfo.TextColor3 = Color3.fromRGB(255, 255, 255)
+                BanInfo.TextSize = 11
+                BanInfo.TextXAlignment = Enum.TextXAlignment.Left
+                BanInfo.TextYAlignment = Enum.TextYAlignment.Center
+                
+                local UnbanBtn = Instance.new("TextButton")
+                UnbanBtn.Parent = BanFrame
+                UnbanBtn.AnchorPoint = Vector2.new(1, 0.5)
+                UnbanBtn.Position = UDim2.new(1, -10, 0.5, 0)
+                UnbanBtn.Size = UDim2.new(0, 70, 0, 30)
+                UnbanBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
+                UnbanBtn.BorderSizePixel = 0
+                UnbanBtn.Font = Enum.Font.GothamBold
+                UnbanBtn.Text = "Unban"
+                UnbanBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+                UnbanBtn.TextSize = 12
+                
+                local UnbanBtnCorner = Instance.new("UICorner")
+                UnbanBtnCorner.CornerRadius = UDim.new(0, 6)
+                UnbanBtnCorner.Parent = UnbanBtn
+                
+                UnbanBtn.MouseButton1Click:Connect(function()
+                    antiCheat:UnbanPlayer(ban.userId)
+                    RefreshBanList()
+                end)
+            end
+        end
+        
+        task.wait()
+        BanListScroll.CanvasSize = UDim2.new(0, 0, 0, BanListLayout.AbsoluteContentSize.Y + 20)
+    end
+    
+    RefreshBanList()
+    
+    task.wait()
+    permissionsContent.CanvasSize = UDim2.new(0, 0, 0, permissionsContent.UIListLayout.AbsoluteContentSize.Y + 30)
+    
+    -- Footer
+    local Footer = Instance.new("Frame")
+    Footer.Name = "Footer"
+    Footer.Parent = MainContainer
+    Footer.Position = UDim2.new(0, 0, 1, -40)
+    Footer.Size = UDim2.new(1, 0, 0, 40)
+    Footer.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    Footer.BackgroundTransparency = 0.3
+    Footer.BorderSizePixel = 0
+    
+    local FooterCorner = Instance.new("UICorner")
+    FooterCorner.CornerRadius = UDim.new(0, 8)
+    FooterCorner.Parent = Footer
+    
+    local FooterCover = Instance.new("Frame")
+    FooterCover.Parent = Footer
+    FooterCover.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    FooterCover.BackgroundTransparency = 0.3
+    FooterCover.BorderSizePixel = 0
+    FooterCover.Size = UDim2.new(1, 0, 0, 8)
+    
+    local Version = Instance.new("TextLabel")
+    Version.Parent = Footer
+    Version.AnchorPoint = Vector2.new(1, 0.5)
+    Version.Position = UDim2.new(1, -20, 0.5, 0)
+    Version.Size = UDim2.new(0, 150, 0, 20)
+    Version.BackgroundTransparency = 1
+    Version.Font = Enum.Font.Gotham
+    Version.Text = "v2.0.0"
+    Version.TextColor3 = Color3.fromRGB(100, 100, 100)
+    Version.TextSize = 11
+    Version.TextXAlignment = Enum.TextXAlignment.Right
+    
+    -- Default to Settings tab
+    tabButtons.Settings.Button.Size = UDim2.new(0, 55, 0, 55)
+    tabButtons.Settings.Button.ImageColor3 = Color3.fromRGB(255, 255, 255)
+    tabButtons.Settings.Stroke.Color = Color3.fromRGB(100, 150, 255)
+    tabButtons.Settings.Stroke.Transparency = 0
+    contentFrames.Settings.Visible = true
+    
+    -- Make draggable
+    local dragging, dragInput, dragStart, startPos
+    
+    local function update(input)
+        local delta = input.Position - dragStart
+        MainContainer.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end
+    
+    Header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = MainContainer.Position
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+    
+    Header.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    
+    game:GetService("UserInputService").InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            update(input)
+        end
+    end)
+    
+    ScreenGui.Parent = playerGui
 end
 
 -- ============================================
--- MAIN INIT
+-- MAIN INITIALIZATION
 -- ============================================
-function SystemModules:Init(config, tier)
-	print("[reiAnC] Initializing system modules...")
-
-	-- Validate config
-	if not config then
-		error("[reiAnC] Config is nil!")
-		return nil
-	end
-
-	if not config.Ranks then
-		error("[reiAnC] Config.Ranks is missing!")
-		return nil
-	end
-
-	-- Initialize Role System
-	local roleSystem = RoleSystem.new(config)
-
-	-- Initialize Anti-Cheat
-	local antiCheat = AntiCheat.new(config, roleSystem)
-
-	-- Setup Commands
-	setupCommands(config, antiCheat, roleSystem)
-
-	-- Player Events
-	Players.PlayerAdded:Connect(function(player)
-		antiCheat:InitPlayer(player)
-
-		player.CharacterAdded:Connect(function(character)
-			task.wait(1)
-			antiCheat:InitPlayer(player)
-
-			-- Show GUI
-			task.wait(0.5)
-			GUISystem.Create(player, config, antiCheat, roleSystem)
-		end)
-	end)
-
-	Players.PlayerRemoving:Connect(function(player)
-		antiCheat:RemovePlayer(player)
-	end)
-
-	-- Start Monitoring
-	antiCheat:StartMonitoring()
-
-	print("[reiAnC] ✓ All systems operational")
-
-	return {
-		AntiCheat = antiCheat,
-		RoleSystem = roleSystem,
-		Config = config,
-		Tier = tier,
-		Version = "1.0.0"
-	}
+function SystemModule:Init(config, userData)
+    print("[reiAnC] Initializing system modules...")
+    
+    -- Initialize Permission System
+    local permissions = PermissionSystem.new(config)
+    print("[reiAnC] ✓ Permission system loaded")
+    
+    -- Initialize Anti-Cheat
+    local antiCheat = AntiCheat.new(config, userData)
+    print("[reiAnC] ✓ Anti-cheat engine loaded")
+    
+    -- Player Events
+    Players.PlayerAdded:Connect(function(player)
+        -- Check if banned
+        for _, ban in ipairs(antiCheat.BannedUsers) do
+            if ban.userId == player.UserId then
+                player:Kick("[reiAnC] You are banned from this game")
+                return
+            end
+        end
+        
+        antiCheat:InitPlayer(player)
+        
+        player.CharacterAdded:Connect(function()
+            task.wait(1)
+            antiCheat:InitPlayer(player)
+        end)
+        
+        -- Show GUI to owner only
+        if player.UserId == game.CreatorId or permissions:CanAccess(player.UserId) then
+            task.wait(2)
+            CreateGUI(player, antiCheat, permissions, userData)
+        end
+    end)
+    
+    Players.PlayerRemoving:Connect(function(player)
+        antiCheat:RemovePlayer(player)
+    end)
+    
+    -- Start Anti-Cheat Monitoring
+    antiCheat:StartMonitoring()
+    print("[reiAnC] ✓ Monitoring started")
+    
+    print("[reiAnC] ✓ All systems operational")
+    
+    return {
+        AntiCheat = antiCheat,
+        Permissions = permissions,
+        Statistics = antiCheat.Statistics,
+        UserData = userData,
+        Version = "2.0.0"
+    }
 end
 
-return SystemModules
+return SystemModule
