@@ -10,6 +10,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 -- Sound IDs
 local SOUND_CLICK = "rbxassetid://6895079853"
@@ -78,15 +79,11 @@ function AntiCheat:DetectExecutor(player)
     local character = player.Character
     if not character then return end
     
-    -- Check for common executor functions in player's environment
     local suspiciousNames = {
         "getgenv", "getrenv", "getrawmetatable", "hookmetamethod",
         "hookfunction", "newcclosure", "setreadonly", "islclosure",
         "getcallingscript", "getnamecallmethod", "checkcaller"
     }
-    
-    -- This would be detected client-side, server can only monitor behavior
-    -- Instead, we monitor suspicious remote call patterns
 end
 
 -- REMOTE SPY DETECTION
@@ -99,7 +96,6 @@ function AntiCheat:MonitorRemoteCalls(player, remote, ...)
     local remoteName = remote.Name
     local currentTime = tick()
     
-    -- Initialize tracking
     if not data.RemoteCalls[remoteName] then
         data.RemoteCalls[remoteName] = {
             count = 0,
@@ -109,7 +105,6 @@ function AntiCheat:MonitorRemoteCalls(player, remote, ...)
     
     local remoteData = data.RemoteCalls[remoteName]
     
-    -- Reset counter every second
     if currentTime - remoteData.lastReset >= 1 then
         remoteData.count = 0
         remoteData.lastReset = currentTime
@@ -117,7 +112,6 @@ function AntiCheat:MonitorRemoteCalls(player, remote, ...)
     
     remoteData.count = remoteData.count + 1
     
-    -- Check for spam (more than 50 calls per second)
     if remoteData.count > 50 then
         self:LogViolation(player, "RemoteSpam", {
             remote = remoteName,
@@ -126,7 +120,6 @@ function AntiCheat:MonitorRemoteCalls(player, remote, ...)
         return true
     end
     
-    -- Check for scanning patterns (rapid sequential calls to different remotes)
     data.LastRemoteTime[remoteName] = currentTime
     
     local recentRemotes = 0
@@ -188,7 +181,6 @@ function AntiCheat:CheckFly(player, character)
     if data.AirTime > 4 then
         self:LogViolation(player, "Fly", {airTime = math.floor(data.AirTime * 10) / 10})
         
-        -- Bring player down
         local params = RaycastParams.new()
         params.FilterDescendantsInstances = {character}
         params.FilterType = Enum.RaycastFilterType.Exclude
@@ -272,7 +264,6 @@ function AntiCheat:LogViolation(player, violationType, data)
         self.PlayerData[userId].ViolationCount = count
     end
     
-    -- Log
     local dataStr = ""
     for k, v in pairs(data) do
         dataStr = dataStr .. k .. "=" .. tostring(v) .. " "
@@ -280,7 +271,6 @@ function AntiCheat:LogViolation(player, violationType, data)
     warn(string.format("[reiAnC] %s (%d) - %s | %s| Count: %d", 
         player.Name, userId, violationType, dataStr, count))
     
-    -- Punishment
     if count >= 3 then
         self:KickPlayer(player, violationType)
     end
@@ -350,7 +340,6 @@ function PermissionSystem.new(config)
         Moderator = {}
     }
     
-    -- Add game creator as owner
     table.insert(self.Permissions.Owner, {
         userId = game.CreatorId,
         username = "Game Owner",
@@ -363,7 +352,6 @@ end
 function PermissionSystem:AddUser(role, userId, username)
     if not self.Permissions[role] then return false end
     
-    -- Check if already exists
     for _, user in ipairs(self.Permissions[role]) do
         if user.userId == userId then
             return false
@@ -405,6 +393,78 @@ end
 
 function PermissionSystem:CanAccess(userId)
     return self:GetUserRole(userId) ~= nil
+end
+
+-- ============================================
+-- COMMAND SYSTEM
+-- ============================================
+local function SetupCommandSystem(player, antiCheat, permissions, userData, config)
+    -- Function untuk toggle GUI
+    local function ToggleGUI()
+        local playerGui = player:WaitForChild("PlayerGui")
+        local gui = playerGui:FindFirstChild("reiAnC_GUI")
+        
+        if gui then
+            gui.Enabled = not gui.Enabled
+            if gui.Enabled then
+                gui.DisplayOrder = 100
+            end
+        else
+            CreateGUI(player, antiCheat, permissions, userData)
+        end
+    end
+    
+    -- Function untuk memproses command
+    local function ProcessCommand(message)
+        if not config.Command or not config.Command.Enabled then
+            return false
+        end
+        
+        local prefix = config.Command.Prefix or "/"
+        local defaultCmd = config.Command.DefaultCommand or "ac"
+        
+        if string.sub(message, 1, 1) ~= prefix then
+            return false
+        end
+        
+        local cmd = string.lower(string.sub(message, 2))
+        
+        if cmd == defaultCmd then
+            local userRole = permissions:GetUserRole(player.UserId)
+            if not userRole then
+                return false
+            end
+            
+            local allowedRoles = config.Command.AccessLevels and config.Command.AccessLevels.ToggleGUI or 
+                               {"Owner", "Developer", "Admin", "Moderator"}
+            
+            local hasAccess = false
+            for _, role in ipairs(allowedRoles) do
+                if userRole == role then
+                    hasAccess = true
+                    break
+                end
+            end
+            
+            if hasAccess then
+                ToggleGUI()
+                return true
+            end
+        end
+        
+        return false
+    end
+    
+    -- Connect ke chat system
+    if config.Command and config.Command.Enabled then
+        player.Chatted:Connect(function(message)
+            ProcessCommand(message)
+        end)
+    end
+    
+    return {
+        Toggle = ToggleGUI
+    }
 end
 
 -- ============================================
@@ -500,7 +560,7 @@ local function CreateGUI(player, antiCheat, permissions, userData)
     ProfileCorner.CornerRadius = UDim.new(1, 0)
     ProfileCorner.Parent = ProfileBtn
     
-    -- Profile Frame (Hidden by default)
+    -- Profile Frame
     local ProfileFrame = Instance.new("Frame")
     ProfileFrame.Name = "ProfileFrame"
     ProfileFrame.Parent = ScreenGui
@@ -578,7 +638,7 @@ local function CreateGUI(player, antiCheat, permissions, userData)
     TabLayout.Padding = UDim.new(0, 15)
     TabLayout.SortOrder = Enum.SortOrder.LayoutOrder
     
-    -- Tab Icons: Updates, Settings, Permissions
+    -- Tab Icons
     local tabs = {
         {Name = "Updates", Icon = "rbxassetid://3926305904", LayoutOrder = 1},
         {Name = "Settings", Icon = "rbxassetid://3926307971", LayoutOrder = 2},
@@ -588,7 +648,7 @@ local function CreateGUI(player, antiCheat, permissions, userData)
     local tabButtons = {}
     local contentFrames = {}
     
-    -- Main Frame (Content Area)
+    -- Main Frame
     local MainFrame = Instance.new("Frame")
     MainFrame.Name = "MainFrame"
     MainFrame.Parent = MainContainer
@@ -630,7 +690,7 @@ local function CreateGUI(player, antiCheat, permissions, userData)
             Stroke = TabStroke
         }
         
-        -- Content Frame for each tab
+        -- Content Frame
         local ContentFrame = Instance.new("ScrollingFrame")
         ContentFrame.Name = tabInfo.Name .. "Content"
         ContentFrame.Parent = MainFrame
@@ -658,7 +718,6 @@ local function CreateGUI(player, antiCheat, permissions, userData)
         
         -- Tab functionality
         TabButton.MouseButton1Click:Connect(function()
-            -- Play sound
             local sound = Instance.new("Sound")
             sound.SoundId = SOUND_CLICK
             sound.Volume = 0.5
@@ -666,12 +725,10 @@ local function CreateGUI(player, antiCheat, permissions, userData)
             sound:Play()
             game:GetService("Debris"):AddItem(sound, 2)
             
-            -- Hide all content
             for _, frame in pairs(contentFrames) do
                 frame.Visible = false
             end
             
-            -- Reset all tabs
             for _, tab in pairs(tabButtons) do
                 TweenService:Create(tab.Button, TweenInfo.new(0.2), {
                     Size = UDim2.new(0, 45, 0, 45),
@@ -683,10 +740,8 @@ local function CreateGUI(player, antiCheat, permissions, userData)
                 }):Play()
             end
             
-            -- Show selected content
             ContentFrame.Visible = true
             
-            -- Highlight selected tab
             TweenService:Create(TabButton, TweenInfo.new(0.2), {
                 Size = UDim2.new(0, 55, 0, 55),
                 ImageColor3 = Color3.fromRGB(255, 255, 255)
@@ -697,7 +752,6 @@ local function CreateGUI(player, antiCheat, permissions, userData)
             }):Play()
         end)
         
-        -- Hover effect
         TabButton.MouseEnter:Connect(function()
             if not ContentFrame.Visible then
                 TweenService:Create(TabButton, TweenInfo.new(0.1), {
@@ -770,7 +824,6 @@ local function CreateGUI(player, antiCheat, permissions, userData)
         Toggle.MouseButton1Click:Connect(function()
             state = not state
             
-            -- Play sound
             local sound = Instance.new("Sound")
             sound.SoundId = SOUND_TOGGLE
             sound.Volume = 0.3
@@ -778,7 +831,6 @@ local function CreateGUI(player, antiCheat, permissions, userData)
             sound:Play()
             game:GetService("Debris"):AddItem(sound, 2)
             
-            -- Animate
             TweenService:Create(Toggle, TweenInfo.new(0.2), {
                 BackgroundColor3 = state and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(150, 50, 50)
             }):Play()
@@ -797,55 +849,44 @@ local function CreateGUI(player, antiCheat, permissions, userData)
     
     CreateToggle(settingsContent, "Speed Detection", antiCheat.Settings.Speed, function(state)
         antiCheat.Settings.Speed = state
-        print("[reiAnC] Speed Detection:", state)
     end)
     
     CreateToggle(settingsContent, "Fly Detection", antiCheat.Settings.Fly, function(state)
         antiCheat.Settings.Fly = state
-        print("[reiAnC] Fly Detection:", state)
     end)
     
     CreateToggle(settingsContent, "Teleport Detection", antiCheat.Settings.Teleport, function(state)
         antiCheat.Settings.Teleport = state
-        print("[reiAnC] Teleport Detection:", state)
     end)
     
     CreateToggle(settingsContent, "Jump Detection", antiCheat.Settings.Jump, function(state)
         antiCheat.Settings.Jump = state
-        print("[reiAnC] Jump Detection:", state)
     end)
     
     CreateToggle(settingsContent, "NoClip Detection", antiCheat.Settings.NoClip, function(state)
         antiCheat.Settings.NoClip = state
-        print("[reiAnC] NoClip Detection:", state)
     end)
     
     CreateToggle(settingsContent, "Infinite Jump Detection", antiCheat.Settings.InfiniteJump, function(state)
         antiCheat.Settings.InfiniteJump = state
-        print("[reiAnC] Infinite Jump Detection:", state)
     end)
     
     CreateToggle(settingsContent, "God Mode Detection", antiCheat.Settings.GodMode, function(state)
         antiCheat.Settings.GodMode = state
-        print("[reiAnC] God Mode Detection:", state)
     end)
     
     CreateToggle(settingsContent, "Remote Spy Detection", antiCheat.Settings.RemoteSpy, function(state)
         antiCheat.Settings.RemoteSpy = state
-        print("[reiAnC] Remote Spy Detection:", state)
     end)
     
     CreateToggle(settingsContent, "Executor Detection", antiCheat.Settings.ExecutorDetection, function(state)
         antiCheat.Settings.ExecutorDetection = state
-        print("[reiAnC] Executor Detection:", state)
     end)
     
     CreateToggle(settingsContent, "Anti-Exploit Protection", antiCheat.Settings.AntiExploit, function(state)
         antiCheat.Settings.AntiExploit = state
-        print("[reiAnC] Anti-Exploit Protection:", state)
     end)
     
-    -- Update canvas size
     task.wait()
     settingsContent.CanvasSize = UDim2.new(0, 0, 0, settingsContent.UIListLayout.AbsoluteContentSize.Y + 30)
     
@@ -913,7 +954,6 @@ local function CreateGUI(player, antiCheat, permissions, userData)
     -- Populate Permissions Tab
     local permissionsContent = contentFrames.Permissions
     
-    -- Role Dropdown
     local roles = {"Owner", "Developer", "Admin", "Moderator"}
     
     for roleIndex, role in ipairs(roles) do
@@ -969,7 +1009,6 @@ local function CreateGUI(player, antiCheat, permissions, userData)
         RoleButton.MouseButton1Click:Connect(function()
             isOpen = not isOpen
             
-            -- Play sound
             local sound = Instance.new("Sound")
             sound.SoundId = SOUND_CLICK
             sound.Volume = 0.3
@@ -981,14 +1020,12 @@ local function CreateGUI(player, antiCheat, permissions, userData)
             UserListFrame.Visible = isOpen
             
             if isOpen then
-                -- Clear existing
                 for _, child in ipairs(UserListFrame:GetChildren()) do
                     if child:IsA("Frame") then
                         child:Destroy()
                     end
                 end
                 
-                -- Populate with users
                 local users = permissions.Permissions[role] or {}
                 
                 if #users == 0 then
@@ -1294,10 +1331,14 @@ function SystemModule:Init(config, userData)
             antiCheat:InitPlayer(player)
         end)
         
-        -- Show GUI to owner only
-        if player.UserId == game.CreatorId or permissions:CanAccess(player.UserId) then
+        -- Setup command system untuk semua pemain yang memiliki akses
+        if permissions:CanAccess(player.UserId) then
             task.wait(2)
-            CreateGUI(player, antiCheat, permissions, userData)
+            local cmdSystem = SetupCommandSystem(player, antiCheat, permissions, userData, config)
+            
+            -- Print info command
+            print(string.format("[reiAnC] Command '/%s' available for %s (%d)", 
+                config.Command.DefaultCommand or "ac", player.Name, player.UserId))
         end
     end)
     
@@ -1310,6 +1351,7 @@ function SystemModule:Init(config, userData)
     print("[reiAnC] ✓ Monitoring started")
     
     print("[reiAnC] ✓ All systems operational")
+    print(string.format("[reiAnC] Use '/%s' command to toggle GUI", config.Command.DefaultCommand or "ac"))
     
     return {
         AntiCheat = antiCheat,
